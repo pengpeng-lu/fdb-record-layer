@@ -71,14 +71,14 @@ public class PrimaryAccessExpansionVisitor extends KeyExpressionExpansionVisitor
                         -1,
                         0))));
 
+        System.out.println("finished PrimaryAccessExpansionVisitor graphExpansion");
         final var allExpansions =
                 GraphExpansion.ofOthers(GraphExpansion.ofQuantifier(baseQuantifier), graphExpansion);
 
         final var parameters = allExpansions.getPlaceholderAliases();
-
         final var expression =
                 new MatchableSortExpression(parameters, isReverse, allExpansions.buildSelect());
-
+        System.out.println("finished PrimaryAccessExpansionVisitor matchableSortExpression");
         return new PrimaryScanMatchCandidate(
                 ExpressionRefTraversal.withRoot(GroupExpressionRef.of(expression)),
                 parameters,

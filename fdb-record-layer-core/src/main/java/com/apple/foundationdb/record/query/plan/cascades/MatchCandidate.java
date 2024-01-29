@@ -432,7 +432,9 @@ public interface MatchCandidate {
 
             final var baseRef = createBaseRef(metaData.getRecordTypes().keySet(), availableRecordTypes, queriedRecordTypeNames, queriedRecordTypes, new PrimaryAccessHint());
             final var expansionVisitor = new PrimaryAccessExpansionVisitor(availableRecordTypes, queriedRecordTypes);
-            return Optional.of(expansionVisitor.expand(() -> Quantifier.forEach(baseRef), primaryKey, isReverse));
+            final Optional<MatchCandidate> r = Optional.of(expansionVisitor.expand(() -> Quantifier.forEach(baseRef), primaryKey, isReverse));
+            System.out.println("return fromPrimaryDefinition");
+            return r;
         }
 
         return Optional.empty();
@@ -444,16 +446,19 @@ public interface MatchCandidate {
                                                                   @Nonnull final Set<String> queriedRecordTypeNames,
                                                                   @Nonnull final Collection<RecordType> queriedRecordTypes,
                                                                   @Nonnull AccessHint accessHint) {
+        System.out.println("MatchCandidate.createbaseRef availableRecordTypes:" + availableRecordTypeNames);
+        // can we query multiple record types? probably
+        System.out.println("queried record types:" + queriedRecordTypes);
         final var quantifier =
                 Quantifier.forEach(
                         GroupExpressionRef.of(
                                 new FullUnorderedScanExpression(availableRecordTypeNames,
-                                        Type.Record.fromFieldDescriptorsMap(RecordMetaData.getFieldDescriptorMapFromTypes(availableRecordTypes)),
+                                        Type.Record.fromTableFieldDescriptorsMap(RecordMetaData.getTableFieldDescriptorMapFromTypes(availableRecordTypes)),
                                         new AccessHints(accessHint))));
         return GroupExpressionRef.of(
                 new LogicalTypeFilterExpression(queriedRecordTypeNames,
                         quantifier,
-                        Type.Record.fromFieldDescriptorsMap(RecordMetaData.getFieldDescriptorMapFromTypes(queriedRecordTypes))));
+                        Type.Record.fromTableFieldDescriptorsMap(RecordMetaData.getTableFieldDescriptorMapFromTypes(queriedRecordTypes))));
     }
 
     @Nonnull

@@ -76,6 +76,7 @@ public class MatchLeafRule extends CascadesRule<RelationalExpression> {
     public void onMatch(@Nonnull final CascadesRuleCall call) {
         final PlanContext context = call.getContext();
         final RelationalExpression expression = call.get(root);
+        System.out.println("MatchLeafRule::onMatch:" + expression.show(false));
         // iterate through all candidates known to the context
         for (final MatchCandidate matchCandidate : context.getMatchCandidates()) {
             final ExpressionRefTraversal traversal = matchCandidate.getTraversal();

@@ -1335,9 +1335,16 @@ public interface Type extends Narrowable<Type> {
          */
         @SuppressWarnings("OptionalGetWithoutIsPresent")
         private Map<String, Field> computeFieldNameFieldMap() {
-            return Objects.requireNonNull(fields)
-                    .stream()
-                    .collect(ImmutableMap.toImmutableMap(field -> field.getFieldNameOptional().get(), Function.identity()));
+            System.out.println("computeFieldNameFieldMap:" + fields);
+            System.out.println("computeFieldNameFieldMap fields[0] is table:" + fields.get(0).isTable);
+            if (false) {
+            // if (fields.size() == 1 && (fields.get(0).getFieldType() instanceof Record)) {
+                return ((Record) fields.get(0).getFieldType()).getFieldNameFieldMap();
+            } else {
+                return Objects.requireNonNull(fields)
+                        .stream()
+                        .collect(ImmutableMap.toImmutableMap(field -> field.getFieldNameOptional().get(), Function.identity()));
+            }
         }
 
         /**
@@ -1347,10 +1354,15 @@ public interface Type extends Narrowable<Type> {
         @Nonnull
         @SuppressWarnings("OptionalGetWithoutIsPresent")
         private Map<String, Integer> computeFieldNameToOrdinal() {
-            return IntStream
-                    .range(0, Objects.requireNonNull(fields).size())
-                    .boxed()
-                    .collect(ImmutableMap.toImmutableMap(id -> fields.get(id).getFieldNameOptional().get(), Function.identity()));
+            if (false) {
+            //if (fields.size() == 1 && fields.get(0).getFieldType().isRecord()) {
+                return ((Record) fields.get(0).getFieldType()).getFieldNameToOrdinalMap();
+            } else {
+                return IntStream
+                        .range(0, Objects.requireNonNull(fields).size())
+                        .boxed()
+                        .collect(ImmutableMap.toImmutableMap(id -> fields.get(id).getFieldNameOptional().get(), Function.identity()));
+            }
         }
 
         /**
@@ -1489,6 +1501,16 @@ public interface Type extends Narrowable<Type> {
         @Nonnull
         public static Record fromFieldsWithName(@Nonnull String name, final boolean isNullable, @Nonnull final List<Field> fields) {
             return new Record(name, isNullable, normalizeFields(fields));
+        }
+
+        public static Record fromTableFieldDescriptorsMap(@Nonnull Map<String, Map<String, Descriptors.FieldDescriptor>> tableFieldDescriptorMap) {
+            final var fieldsBuilder = ImmutableList.<Field>builder();
+            for (final var entry : Objects.requireNonNull(tableFieldDescriptorMap).entrySet()) {
+                final var fieldDescriptorMap = entry.getValue();
+                fieldsBuilder.add(Field.of(fromFieldDescriptorsMap(fieldDescriptorMap), Optional.ofNullable(entry.getKey())));
+            }
+
+            return fromFields(true, fieldsBuilder.build());
         }
 
         /**
@@ -1636,6 +1658,8 @@ public interface Type extends Narrowable<Type> {
             @Nonnull
             private final Optional<Integer> fieldIndexOptional;
 
+            private final boolean isTable;
+
             /**
              * Memoized hash function.
              */
@@ -1654,9 +1678,14 @@ public interface Type extends Narrowable<Type> {
              * @param fieldIndexOptional The field index.
              */
             protected Field(@Nonnull final Type fieldType, @Nonnull final Optional<String> fieldNameOptional, @Nonnull Optional<Integer> fieldIndexOptional) {
+                this(fieldType, fieldNameOptional, fieldIndexOptional, false);
+            }
+
+            protected Field(@Nonnull final Type fieldType, @Nonnull final Optional<String> fieldNameOptional, @Nonnull Optional<Integer> fieldIndexOptional, boolean isTable) {
                 this.fieldType = fieldType;
                 this.fieldNameOptional = fieldNameOptional;
                 this.fieldIndexOptional = fieldIndexOptional;
+                this.isTable = isTable;
             }
 
             /**
@@ -1728,6 +1757,10 @@ public interface Type extends Narrowable<Type> {
             public int compareTo(final Field o) {
                 Verify.verifyNotNull(o);
                 return Integer.compare(getFieldIndex(), o.getFieldIndex());
+            }
+
+            public static Field of(@Nonnull final Type fieldType, @Nonnull final Optional<String> fieldNameOptional, @Nonnull Optional<Integer> fieldIndexOptional, boolean isTable) {
+                return new Field(fieldType, fieldNameOptional, fieldIndexOptional, isTable);
             }
 
             /**

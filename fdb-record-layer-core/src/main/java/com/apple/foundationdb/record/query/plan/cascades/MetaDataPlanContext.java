@@ -158,10 +158,8 @@ public class MetaDataPlanContext implements PlanContext {
                     MatchCandidate.fromIndexDefinition(metaData, index, isSortReverse);
             matchCandidatesBuilder.addAll(candidatesForIndex);
         }
-
         MatchCandidate.fromPrimaryDefinition(metaData, queriedRecordTypeNames, commonPrimaryKey, isSortReverse)
                 .ifPresent(matchCandidatesBuilder::add);
-
         return new MetaDataPlanContext(plannerConfiguration, matchCandidatesBuilder.build());
     }
 

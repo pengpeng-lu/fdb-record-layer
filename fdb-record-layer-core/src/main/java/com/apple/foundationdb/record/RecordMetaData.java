@@ -48,6 +48,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -710,12 +711,40 @@ public class RecordMetaData implements RecordMetaDataProvider {
     }
 
     @Nonnull
+    public Map<String, Map<String, Descriptors.FieldDescriptor>> getTableFieldDescriptorMapFromNames(@Nonnull final Collection<String> recordTypeNames) {
+        return getTableFieldDescriptorMap(recordTypeNames.stream().map(this::getRecordType));
+    }
+
+    @Nonnull
     public static Map<String, Descriptors.FieldDescriptor> getFieldDescriptorMapFromTypes(@Nonnull final Collection<RecordType> recordTypes) {
         if (recordTypes.size() == 1) {
             final var recordType = Iterables.getOnlyElement(recordTypes);
             return Type.Record.toFieldDescriptorMap(recordType.getDescriptor().getFields());
         }
         return getFieldDescriptorMap(recordTypes.stream());
+    }
+
+    @Nonnull
+    public static Map<String, Map<String, Descriptors.FieldDescriptor>> getTableFieldDescriptorMapFromTypes(@Nonnull final Collection<RecordType> recordTypes) {
+        if (recordTypes.size() == 1) {
+            final var recordType = Iterables.getOnlyElement(recordTypes);
+            return Map.of(recordType.getName(), Type.Record.toFieldDescriptorMap(recordType.getDescriptor().getFields()));
+        }
+        return getTableFieldDescriptorMap(recordTypes.stream());
+    }
+
+    /*
+    return Map<table_name, Map<field_name, fieldDescriptor>>
+     */
+    @Nonnull
+    private static Map<String, Map<String, Descriptors.FieldDescriptor>> getTableFieldDescriptorMap(@Nonnull final Stream<RecordType> recordTypeStream) {
+        // todo: should be removed https://github.com/FoundationDB/fdb-record-layer/issues/1884
+        Map<String, Map<String, Descriptors.FieldDescriptor>> m = new LinkedHashMap<>();
+        for (RecordType recordType: recordTypeStream.collect(Collectors.toList())) {
+            m.put(recordType.getName(), recordType.getDescriptor().getFields().stream()
+                    .collect(Collectors.toMap(Descriptors.FieldDescriptor::getName, Function.identity())));
+        }
+        return m;
     }
 
     @Nonnull
@@ -740,7 +769,8 @@ public class RecordMetaData implements RecordMetaDataProvider {
                                             fieldDescriptor2.getType().getJavaType()) {
                                         return fieldDescriptor;
                                     }
-
+                                    System.out.println("field1:" + fieldDescriptor.getName() + " type:" + fieldDescriptor.getType());
+                                    System.out.println("field2:" + fieldDescriptor2.getName() + " type:" + fieldDescriptor2.getType());
                                     throw new IllegalArgumentException("cannot form union type of complex fields");
                                 })));
     }

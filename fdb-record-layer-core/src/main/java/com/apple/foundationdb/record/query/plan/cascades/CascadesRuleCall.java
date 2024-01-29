@@ -91,6 +91,7 @@ public class CascadesRuleCall implements PlannerRuleCall<ExpressionRef<? extends
     }
 
     public void run() {
+        System.out.println("cascadesRuleCall rule onmatch called:" + rule.getClass());
         rule.onMatch(this);
     }
 

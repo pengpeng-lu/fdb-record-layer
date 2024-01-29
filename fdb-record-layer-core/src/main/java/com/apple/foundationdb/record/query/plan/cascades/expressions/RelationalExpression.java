@@ -124,30 +124,34 @@ public interface RelationalExpression extends Correlated<RelationalExpression>, 
         final GroupExpressionRef<? extends RelationalExpression> baseRef;
         Quantifier.ForEach quantifier;
         if (queriedRecordTypes.isEmpty()) {
+            System.out.println("queriedRecord types empty");
             baseRef = GroupExpressionRef.of(new FullUnorderedScanExpression(allRecordTypes,
                     Type.Record.fromFieldDescriptorsMap(recordMetaData.getFieldDescriptorMapFromNames(allRecordTypes)),
                     new AccessHints()));
             quantifier = Quantifier.forEach(baseRef);
         } else {
+            System.out.println("queriedRecord types not empty");
             final var fuseRef = GroupExpressionRef.of(new FullUnorderedScanExpression(allRecordTypes,
-                    Type.Record.fromFieldDescriptorsMap(recordMetaData.getFieldDescriptorMapFromNames(allRecordTypes)),
+                    Type.Record.fromTableFieldDescriptorsMap(recordMetaData.getTableFieldDescriptorMapFromNames(allRecordTypes)),
                     new AccessHints()));
             baseRef = GroupExpressionRef.of(
                     new LogicalTypeFilterExpression(
                             new HashSet<>(queriedRecordTypes),
                             Quantifier.forEach(fuseRef),
-                            Type.Record.fromFieldDescriptorsMap(recordMetaData.getFieldDescriptorMapFromNames(queriedRecordTypes))));
+                            Type.Record.fromTableFieldDescriptorsMap(recordMetaData.getTableFieldDescriptorMapFromNames(queriedRecordTypes))));
             quantifier = Quantifier.forEach(baseRef);
         }
 
         final SelectExpression selectExpression;
         if (query.getFilter() != null) {
+            System.out.println("queriedRecord filter not null");
             selectExpression =
                     GraphExpansion.ofOthers(GraphExpansion.builder().addQuantifier(quantifier).build(),
                                     query.getFilter()
                                             .expand(quantifier, () -> Quantifier.forEach(baseRef)))
                             .buildSimpleSelectOverQuantifier(quantifier);
         } else {
+            System.out.println("queriedRecord filter null");
             selectExpression =
                     GraphExpansion.builder().addQuantifier(quantifier).build()
                             .buildSimpleSelectOverQuantifier(quantifier);
@@ -159,15 +163,18 @@ public interface RelationalExpression extends Correlated<RelationalExpression>, 
         }
 
         if (query.getSort() != null) {
+            System.out.println("queriedRecord sort not null");
             quantifier = Quantifier.forEach(GroupExpressionRef.of(
                     new LogicalSortExpression(ScalarTranslationVisitor.translateKeyExpression(query.getSort(), quantifier.getFlowedObjectType()),
                             query.isSortReverse(),
                             quantifier)));
         } else {
+            System.out.println("queriedRecord sort null");
             quantifier = Quantifier.forEach(GroupExpressionRef.of(new LogicalSortExpression(ImmutableList.of(), false, quantifier)));
         }
 
         if (query.getRequiredResults() != null) {
+            System.out.println("queriedRecord required results not null");
             final List<? extends Value> projectedValues =
                     Value.fromKeyExpressions(
                             query.getRequiredResults()
@@ -175,6 +182,7 @@ public interface RelationalExpression extends Correlated<RelationalExpression>, 
                                     .flatMap(keyExpression -> keyExpression.normalizeKeyForPositions().stream())
                                     .collect(ImmutableList.toImmutableList()),
                             quantifier);
+            System.out.println("projectedValues:" + projectedValues);
             quantifier = Quantifier.forEach(GroupExpressionRef.of(new LogicalProjectionExpression(projectedValues, quantifier)));
         }
 
@@ -703,9 +711,11 @@ public interface RelationalExpression extends Correlated<RelationalExpression>, 
                                                   @Nonnull final AliasMap aliasMap,
                                                   @Nonnull final IdentityBiMap<Quantifier, PartialMatch> partialMatchMap) {
         if (hasUnboundQuantifiers(aliasMap) || hasIncompatibleBoundQuantifiers(aliasMap, candidateExpression.getQuantifiers())) {
+            System.out.println("FUSE exactlySubsumedBy get here A");
             return ImmutableList.of();
         }
 
+        System.out.println("RelationalExpression exactlySubsumedBy equalsWithoutChildren:" + equalsWithoutChildren(candidateExpression, aliasMap));
         if (equalsWithoutChildren(candidateExpression, aliasMap)) {
             return MatchInfo.tryFromMatchMap(partialMatchMap)
                     .map(ImmutableList::of)

@@ -237,14 +237,21 @@ public class FieldValue extends AbstractValue implements ValueWithChild {
     public static FieldPath resolveFieldPath(@Nonnull final Type inputType, @Nonnull final List<Accessor> accessors) {
         final var accessorPathBuilder = ImmutableList.<ResolvedAccessor>builder();
         var currentType = inputType;
+        System.out.println("currentType:" + currentType);
         for (final var accessor : accessors) {
             final var fieldName = accessor.getName();
             SemanticException.check(currentType.isRecord(), SemanticException.ErrorCode.FIELD_ACCESS_INPUT_NON_RECORD_TYPE,
                     String.format("field '%s' can only be resolved on records", fieldName == null ? "#" + accessor.getOrdinal() : fieldName));
-            final var recordType = (Type.Record)currentType;
+            // final var recordType = (Type.Record) currentType;
+            var recordType = (Type.Record) currentType;
+            if (true) {
+            // if (recordType.getFields().size() == 1 && recordType.getField(0).getFieldType().isRecord()) {
+                recordType = (Type.Record)((Type.Record)currentType).getField(0).getFieldType();
+            }
             final var fieldNameFieldMap = Objects.requireNonNull(recordType.getFieldNameFieldMap());
             final Field field;
             final int ordinal;
+            System.out.println("resolveFieldPath fieldName:" + fieldName + " recordType:" + recordType + "fieldNameFieldMap:" + fieldNameFieldMap);
             if (fieldName != null) {
                 SemanticException.check(fieldNameFieldMap.containsKey(fieldName), SemanticException.ErrorCode.RECORD_DOES_NOT_CONTAIN_FIELD);
                 field = fieldNameFieldMap.get(fieldName);
@@ -277,6 +284,7 @@ public class FieldValue extends AbstractValue implements ValueWithChild {
 
     @Nonnull
     public static FieldValue ofFieldNames(@Nonnull Value childValue, @Nonnull final List<String> fieldNames) {
+        System.out.println("FieldValue ofFieldNames childValue class:" + childValue.getClass() + " resultType:" + childValue.getResultType() + " fieldNames:" + fieldNames);
         final var resolved = resolveFieldPath(childValue.getResultType(), fieldNames.stream().map(fieldName -> new Accessor(fieldName, -1)).collect(ImmutableList.toImmutableList()));
         return new FieldValue(childValue, resolved);
     }

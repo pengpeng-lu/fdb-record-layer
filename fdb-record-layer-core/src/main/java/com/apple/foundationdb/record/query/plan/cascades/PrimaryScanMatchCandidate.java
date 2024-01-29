@@ -184,7 +184,7 @@ public class PrimaryScanMatchCandidate implements MatchCandidate, ValueIndexLike
                                             final boolean reverseScanOrder) {
         final var availableRecordTypeNames = getAvailableRecordTypeNames();
         final var availableType =
-                Type.Record.fromFieldDescriptorsMap(RecordMetaData.getFieldDescriptorMapFromTypes(getAvailableRecordTypes()))
+                Type.Record.fromTableFieldDescriptorsMap(RecordMetaData.getTableFieldDescriptorMapFromTypes(getAvailableRecordTypes()))
                         .narrowMaybe(Type.Record.class).orElseThrow(() -> new RecordCoreException("type is of wrong implementor"));
         final var scanPlan =
                 new RecordQueryScanPlan(availableRecordTypeNames,
@@ -203,7 +203,7 @@ public class PrimaryScanMatchCandidate implements MatchCandidate, ValueIndexLike
         }
 
         final var queriedType =
-                Type.Record.fromFieldDescriptorsMap(RecordMetaData.getFieldDescriptorMapFromTypes(getQueriedRecordTypes()));
+                Type.Record.fromTableFieldDescriptorsMap(RecordMetaData.getTableFieldDescriptorMapFromTypes(getQueriedRecordTypes()));
 
         return new RecordQueryTypeFilterPlan(
                 Quantifier.physical(memoizer.memoizePlans(scanPlan)),

@@ -55,6 +55,7 @@ public class MatchValueRule extends ValueComputationRule<Iterable<? extends Valu
 
     @Override
     public void onMatch(@Nonnull final ValueComputationRuleCall<Iterable<? extends Value>, Map<Value, Function<Value, Value>>> call) {
+        System.out.println("MatchValueRule::onMatch called");
         final var bindings = call.getBindings();
         final var value = bindings.get(rootMatcher);
 

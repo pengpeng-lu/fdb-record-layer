@@ -116,6 +116,8 @@ public class FullUnorderedScanExpression implements RelationalExpression, Planne
     @Override
     @SuppressWarnings("PMD.CompareObjectsWithEquals")
     public boolean equalsWithoutChildren(@Nonnull RelationalExpression otherExpression, @Nonnull final AliasMap equivalencesMap) {
+        System.out.println("FUSE equalsWithoutChildren recordTypes:" + recordTypes + " other recordtypes:" + ((FullUnorderedScanExpression) otherExpression).getRecordTypes());
+        System.out.println("FUSE equalsWithoutChildren flowedType:" + flowedType + " other flowedType:" + otherExpression.getResultValue().getResultType());
         if (this == otherExpression) {
             return true;
         }
@@ -123,8 +125,12 @@ public class FullUnorderedScanExpression implements RelationalExpression, Planne
             return false;
         }
         if (!recordTypes.equals(((FullUnorderedScanExpression)otherExpression).getRecordTypes())) {
+            System.out.println("fuse equals recordtype doesn't match");
             return false;
         }
+        System.out.println("fuse equals flowedType match:" + flowedType.equals(otherExpression.getResultValue().getResultType()));
+        System.out.println("fuse equals flowed type typecode & nullable match:" +
+                ((flowedType.getTypeCode().equals(otherExpression.getResultValue().getResultType().getTypeCode()) && (flowedType.isNullable() == otherExpression.getResultValue().getResultType().isNullable()))));
 
         return flowedType.equals(otherExpression.getResultValue().getResultType());
     }
@@ -156,12 +162,16 @@ public class FullUnorderedScanExpression implements RelationalExpression, Planne
                                           @Nonnull final AliasMap aliasMap,
                                           @Nonnull final IdentityBiMap<Quantifier, PartialMatch> partialMatchMap,
                                           @Nonnull final EvaluationContext evaluationContext) {
+        System.out.println("FUSE subsumedBy is called with candidate result type:" + candidateExpression.getResultType()
+        + " getClass:" + candidateExpression.getClass());
         if (getClass() != candidateExpression.getClass()) {
             return ImmutableList.of();
         }
         // if query does not contain candidate's indexes, the query cannot be subsumed by the candidate
         if (getAccessHints().satisfies(((FullUnorderedScanExpression)candidateExpression).getAccessHints())) {
-            return exactlySubsumedBy(candidateExpression, aliasMap, partialMatchMap);
+            Iterable<MatchInfo> r = exactlySubsumedBy(candidateExpression, aliasMap, partialMatchMap);
+            System.out.println("FUSE subsumed by return hasNext:" + r.iterator().hasNext());
+            return r;
         } else {
             return ImmutableList.of();
         }

@@ -312,7 +312,7 @@ public class AggregateIndexMatchCandidate implements MatchCandidate, WithBaseQua
                                             @Nonnull final Memoizer memoizer,
                                             @Nonnull final List<ComparisonRange> comparisonRanges,
                                             final boolean reverseScanOrder) {
-        final var baseRecordType = Type.Record.fromFieldDescriptorsMap(RecordMetaData.getFieldDescriptorMapFromTypes(recordTypes));
+        final var baseRecordType = Type.Record.fromTableFieldDescriptorsMap(RecordMetaData.getTableFieldDescriptorMapFromTypes(recordTypes));
 
         // reset indexes of all fields, such that we can normalize them
         final var type = reset(groupByResultValue.getResultType());

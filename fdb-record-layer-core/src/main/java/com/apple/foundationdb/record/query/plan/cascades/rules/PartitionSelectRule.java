@@ -74,6 +74,8 @@ public class PartitionSelectRule extends CascadesRule<SelectExpression> {
         final var bindings = call.getBindings();
 
         final var selectExpression = bindings.get(root);
+        // System.out.println("PartitionSelectRule::onMatch selectExpression:" + selectExpression.show(false));
+        System.out.println("PartitionSelectRule selectExpression quantifier size:" + selectExpression.getQuantifiers().size());
         if (selectExpression.getQuantifiers().size() < 3) {
             return;
         }
@@ -85,6 +87,7 @@ public class PartitionSelectRule extends CascadesRule<SelectExpression> {
         if (lowerAliases.isEmpty()) {
             return;
         }
+        System.out.println("PartitionSelectRule finish lowerAliases");
 
         final var upperAliasesBuilder = ImmutableSet.<CorrelationIdentifier>builder();
         for (final var quantifier : selectExpression.getQuantifiers()) {
@@ -97,6 +100,8 @@ public class PartitionSelectRule extends CascadesRule<SelectExpression> {
         if (upperAliases.isEmpty()) {
             return;
         }
+        System.out.println("PartitionSelectRule finish upperAliases");
+
 
         final var independentQuantifiersPartitioning = selectExpression.getIndependentQuantifiersPartitioning();
         if (independentQuantifiersPartitioning.size() > 1) {
@@ -135,6 +140,7 @@ public class PartitionSelectRule extends CascadesRule<SelectExpression> {
                 .anyMatch(lowerAlias -> !Sets.intersection(uppersDependingOnLowersAliases, fullCorrelationOrder.get(lowerAlias)).isEmpty())) {
             return;
         }
+        System.out.println("PartitionSelectRule any lower ones depends on upper ones");
 
         //
         // In order to avoid a costly calls to translateCorrelations(), we prefer deep-right dags.
@@ -158,6 +164,7 @@ public class PartitionSelectRule extends CascadesRule<SelectExpression> {
         final var lowersCorrelatedToByUppersBuilder = ImmutableList.<CorrelationIdentifier>builder();
 
         final var resultValue = selectExpression.getResultValue();
+        System.out.println("selectExpression resultValue:" + resultValue);
         final var resultCorrelatedToLowers = Sets.intersection(lowerAliases, resultValue.getCorrelatedTo());
         lowersCorrelatedToByUppersBuilder.addAll(resultCorrelatedToLowers);
 
@@ -302,6 +309,7 @@ public class PartitionSelectRule extends CascadesRule<SelectExpression> {
             upperGraphExpansionBuilder.addAllPredicates(newUpperPredicates);
             upperSelectExpression = upperGraphExpansionBuilder.build().buildSelectWithResultValue(newResultValue);
         }
+        System.out.println("upperSelectExpression:" + upperSelectExpression.show(false));
         
         call.yield(upperSelectExpression);
     }

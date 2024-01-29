@@ -227,7 +227,7 @@ public class ValueIndexScanMatchCandidate implements ScanWithFetchMatchCandidate
         final var matchInfo = partialMatch.getMatchInfo();
 
         final var baseRecordType =
-                Type.Record.fromFieldDescriptorsMap(RecordMetaData.getFieldDescriptorMapFromTypes(queriedRecordTypes));
+                Type.Record.fromTableFieldDescriptorsMap(RecordMetaData.getTableFieldDescriptorMapFromTypes(queriedRecordTypes));
         return tryFetchCoveringIndexScan(partialMatch, planContext, memoizer, comparisonRanges, reverseScanOrder, baseRecordType)
                 .orElseGet(() ->
                         new RecordQueryIndexPlan(index.getName(),

@@ -41,11 +41,14 @@ import com.google.protobuf.DescriptorProtos;
 import com.google.protobuf.DescriptorProtos.DescriptorProto;
 import com.google.protobuf.DescriptorProtos.FieldDescriptorProto;
 import com.google.protobuf.Descriptors;
+import com.google.protobuf.MapEntry;
 import com.google.protobuf.Message;
 import org.apache.commons.lang3.StringUtils;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -1337,8 +1340,9 @@ public interface Type extends Narrowable<Type> {
         private Map<String, Field> computeFieldNameFieldMap() {
             System.out.println("computeFieldNameFieldMap:" + fields);
             System.out.println("computeFieldNameFieldMap fields[0] is table:" + fields.get(0).isTable);
-            if (false) {
-            // if (fields.size() == 1 && (fields.get(0).getFieldType() instanceof Record)) {
+            // if there are multiple table fields, which one do we return?
+            //if (false) {
+            if (!fields.isEmpty() && (fields.get(0).getFieldType() instanceof Record)) {
                 return ((Record) fields.get(0).getFieldType()).getFieldNameFieldMap();
             } else {
                 return Objects.requireNonNull(fields)
@@ -1354,8 +1358,8 @@ public interface Type extends Narrowable<Type> {
         @Nonnull
         @SuppressWarnings("OptionalGetWithoutIsPresent")
         private Map<String, Integer> computeFieldNameToOrdinal() {
-            if (false) {
-            //if (fields.size() == 1 && fields.get(0).getFieldType().isRecord()) {
+            // if (false) {
+            if (!fields.isEmpty() && fields.get(0).getFieldType().isRecord()) {
                 return ((Record) fields.get(0).getFieldType()).getFieldNameToOrdinalMap();
             } else {
                 return IntStream
@@ -1451,6 +1455,56 @@ public interface Type extends Narrowable<Type> {
             return getTypeCode() == otherType.getTypeCode() && isNullable() == otherType.isNullable() &&
                    ((isErased() && otherType.isErased()) ||
                     (Objects.requireNonNull(fields).equals(otherType.fields)));
+        }
+
+        public boolean equalsIgnoreFieldOrder(final Object obj) {
+            if (obj == null) {
+                return false;
+            }
+
+            if (obj == this) {
+                return true;
+            }
+
+            if (getClass() != obj.getClass()) {
+                return false;
+            }
+
+            final var otherType = (Record)obj;
+            if (getTypeCode() != otherType.getTypeCode() || isNullable() != otherType.isNullable()) {
+                return false;
+            }
+            if (isErased() && otherType.isErased()) {
+                return true;
+            }
+            if (getFields().size() != otherType.getFields().size()) {
+                return false;
+            }
+            Map<String, Field> fieldNameMap = Objects.requireNonNull(fields)
+                    .stream()
+                    .collect(ImmutableMap.toImmutableMap(field -> field.getFieldNameOptional().get(), Function.identity()));
+            Map<String, Field> otherFieldNameMap = Objects.requireNonNull(otherType.getFields())
+                    .stream()
+                    .collect(ImmutableMap.toImmutableMap(field -> field.getFieldNameOptional().get(), Function.identity()));
+            if (otherFieldNameMap == null) {
+                return fieldNameMap == null;
+            }
+            if (fieldNameMap == null) {
+                return false;
+            }
+            for (Map.Entry<String, Field> entry: fieldNameMap.entrySet()) {
+                if (!otherFieldNameMap.containsKey(entry.getKey())) {
+                    return false;
+                }
+                if (otherFieldNameMap.get(entry.getKey()).getFieldType().getTypeCode() != entry.getValue().getFieldType().getTypeCode()) {
+                    return false;
+                }
+                if (entry.getValue().getFieldType().isRecord()) {
+                    return ((Record) entry.getValue().getFieldType()).equalsIgnoreFieldOrder(otherFieldNameMap.get(entry.getKey()).getFieldType());
+                }
+                return otherFieldNameMap.get(entry.getKey()).equals(entry.getValue());
+            }
+            return false;
         }
 
         @Override
@@ -1696,6 +1750,8 @@ public interface Type extends Narrowable<Type> {
             public Type getFieldType() {
                 return fieldType;
             }
+
+            public boolean isTable() {return isTable;}
 
             /**
              * Returns the field name.

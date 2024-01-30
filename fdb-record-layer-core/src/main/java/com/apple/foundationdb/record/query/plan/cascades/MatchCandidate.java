@@ -433,7 +433,6 @@ public interface MatchCandidate {
             final var baseRef = createBaseRef(metaData.getRecordTypes().keySet(), availableRecordTypes, queriedRecordTypeNames, queriedRecordTypes, new PrimaryAccessHint());
             final var expansionVisitor = new PrimaryAccessExpansionVisitor(availableRecordTypes, queriedRecordTypes);
             final Optional<MatchCandidate> r = Optional.of(expansionVisitor.expand(() -> Quantifier.forEach(baseRef), primaryKey, isReverse));
-            System.out.println("return fromPrimaryDefinition");
             return r;
         }
 
@@ -446,9 +445,7 @@ public interface MatchCandidate {
                                                                   @Nonnull final Set<String> queriedRecordTypeNames,
                                                                   @Nonnull final Collection<RecordType> queriedRecordTypes,
                                                                   @Nonnull AccessHint accessHint) {
-        System.out.println("MatchCandidate.createbaseRef availableRecordTypes:" + availableRecordTypeNames);
         // can we query multiple record types? probably
-        System.out.println("queried record types:" + queriedRecordTypes);
         final var quantifier =
                 Quantifier.forEach(
                         GroupExpressionRef.of(

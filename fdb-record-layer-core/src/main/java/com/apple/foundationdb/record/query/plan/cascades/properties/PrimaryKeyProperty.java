@@ -27,6 +27,7 @@ import com.apple.foundationdb.record.query.plan.cascades.PlanProperty;
 import com.apple.foundationdb.record.query.plan.cascades.Quantifier;
 import com.apple.foundationdb.record.query.plan.cascades.ScalarTranslationVisitor;
 import com.apple.foundationdb.record.query.plan.cascades.expressions.RelationalExpression;
+import com.apple.foundationdb.record.query.plan.cascades.typing.Type;
 import com.apple.foundationdb.record.query.plan.cascades.values.Value;
 import com.apple.foundationdb.record.query.plan.plans.RecordQueryAggregateIndexPlan;
 import com.apple.foundationdb.record.query.plan.plans.RecordQueryComparatorPlan;
@@ -312,8 +313,13 @@ public class PrimaryKeyProperty implements PlanProperty<Optional<List<Value>>> {
         @Nonnull
         @Override
         public Optional<List<Value>> visitScanPlan(@Nonnull final RecordQueryScanPlan scanPlan) {
-            return Optional.of(ScalarTranslationVisitor.translateKeyExpression(scanPlan.getCommonPrimaryKey(),
-                    Objects.requireNonNull(scanPlan.getResultType().getInnerType())));
+            final var innerType = Objects.requireNonNull(scanPlan.getResultType().getInnerType());
+            if (innerType.isRecord() && (((Type.Record)innerType).getFields().size() > 1) && ((Type.Record)innerType).getField(0).getFieldType().isRecord()) {
+                return Optional.empty();
+            } else {
+                return Optional.of(ScalarTranslationVisitor.translateKeyExpression(scanPlan.getCommonPrimaryKey(),
+                        Objects.requireNonNull(scanPlan.getResultType().getInnerType())));
+            }
         }
 
         @Nonnull

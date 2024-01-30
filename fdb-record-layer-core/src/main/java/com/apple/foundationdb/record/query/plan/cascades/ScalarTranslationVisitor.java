@@ -193,6 +193,7 @@ public class ScalarTranslationVisitor implements KeyExpressionVisitor<ScalarTran
 
     @Nonnull
     public static List<Value> translateKeyExpression(@Nullable KeyExpression keyExpression, @Nonnull Type flowedType) {
+        System.out.println("ScalarTranslationVisitor translateKeyExpression called keyExpression:" + keyExpression + " flowedType:" + flowedType);
         if (keyExpression == null) {
             return ImmutableList.of();
         }

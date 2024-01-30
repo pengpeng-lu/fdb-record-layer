@@ -221,15 +221,16 @@ public class MatchIntermediateRule extends CascadesRule<RelationalExpression> {
                                                                @Nonnull final EvaluationContext context) {
         Verify.verify(!expression.getQuantifiers().isEmpty());
         Verify.verify(!candidateExpression.getQuantifiers().isEmpty());
-
-        return expression.match(candidateExpression,
+        final var result = expression.match(candidateExpression,
                 AliasMap.emptyMap(),
                 expression.getQuantifiers(),
                 candidateExpression.getQuantifiers(),
                 quantifier -> constraintsForQuantifier(matchCandidate, quantifier),
                 (quantifier, otherQuantifier, aliasMap) -> matchQuantifiers(matchCandidate, quantifier, otherQuantifier, aliasMap),
                 ((boundCorrelatedToMap, boundMatches) -> combineMatches(expression, candidateExpression, boundCorrelatedToMap, boundMatches, context)));
+        System.out.println("MatchIntermediateRule matchWithCandidate result has next:" + result.iterator().hasNext());
 
+        return result;
     }
 
     /**

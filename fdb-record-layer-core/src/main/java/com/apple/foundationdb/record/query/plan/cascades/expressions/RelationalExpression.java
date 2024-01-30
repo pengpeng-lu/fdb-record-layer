@@ -126,7 +126,7 @@ public interface RelationalExpression extends Correlated<RelationalExpression>, 
         if (queriedRecordTypes.isEmpty()) {
             System.out.println("queriedRecord types empty");
             baseRef = GroupExpressionRef.of(new FullUnorderedScanExpression(allRecordTypes,
-                    Type.Record.fromFieldDescriptorsMap(recordMetaData.getFieldDescriptorMapFromNames(allRecordTypes)),
+                    Type.Record.fromTableFieldDescriptorsMap(recordMetaData.getTableFieldDescriptorMapFromNames(allRecordTypes)),
                     new AccessHints()));
             quantifier = Quantifier.forEach(baseRef);
         } else {
@@ -711,7 +711,6 @@ public interface RelationalExpression extends Correlated<RelationalExpression>, 
                                                   @Nonnull final AliasMap aliasMap,
                                                   @Nonnull final IdentityBiMap<Quantifier, PartialMatch> partialMatchMap) {
         if (hasUnboundQuantifiers(aliasMap) || hasIncompatibleBoundQuantifiers(aliasMap, candidateExpression.getQuantifiers())) {
-            System.out.println("FUSE exactlySubsumedBy get here A");
             return ImmutableList.of();
         }
 

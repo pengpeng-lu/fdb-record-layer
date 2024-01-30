@@ -128,11 +128,13 @@ public class FullUnorderedScanExpression implements RelationalExpression, Planne
             System.out.println("fuse equals recordtype doesn't match");
             return false;
         }
-        System.out.println("fuse equals flowedType match:" + flowedType.equals(otherExpression.getResultValue().getResultType()));
+        System.out.println("fuse equals flowedType match:" + flowedType.equalsIgnoreFieldOrder(otherExpression.getResultValue().getResultType()));
         System.out.println("fuse equals flowed type typecode & nullable match:" +
                 ((flowedType.getTypeCode().equals(otherExpression.getResultValue().getResultType().getTypeCode()) && (flowedType.isNullable() == otherExpression.getResultValue().getResultType().isNullable()))));
-
-        return flowedType.equals(otherExpression.getResultValue().getResultType());
+        // return ((flowedType.getTypeCode().equals(otherExpression.getResultValue().getResultType().getTypeCode()) && (flowedType.isNullable() == otherExpression.getResultValue().getResultType().isNullable())));
+        boolean equalsIgnoreFieldOrder = flowedType.equalsIgnoreFieldOrder(otherExpression.getResultValue().getResultType());
+        System.out.println("fuse equalsIgnoreFieldOrder:" + equalsIgnoreFieldOrder);
+        return equalsIgnoreFieldOrder;
     }
 
     @SuppressWarnings("EqualsWhichDoesntCheckParameterClass")

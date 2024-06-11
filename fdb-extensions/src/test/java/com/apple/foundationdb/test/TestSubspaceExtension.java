@@ -34,6 +34,7 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 
 /**
  * Extension for creating a subspace for tests. Each test will be given a unique subspace, and the data
@@ -60,6 +61,9 @@ public class TestSubspaceExtension implements AfterEachCallback {
     @Nullable
     private Subspace subspace;
 
+    private Executor executor = TestExecutors.defaultThreadPool();
+
+
     public TestSubspaceExtension(TestDatabaseExtension dbExtension) {
         this.dbExtension = dbExtension;
     }
@@ -67,7 +71,7 @@ public class TestSubspaceExtension implements AfterEachCallback {
     @Nonnull
     public Subspace getSubspace() {
         if (subspace == null) {
-            subspace = dbExtension.getDatabase().runAsync(tr ->
+            subspace = dbExtension.getDatabase().run(tr ->
                 DirectoryLayer.getDefault().createOrOpen(tr, List.of("fdb-extensions-test"))
                         .thenApply(directorySubspace -> directorySubspace.subspace(Tuple.from(UUID.randomUUID())))
             ).join();

@@ -589,7 +589,7 @@ public class RangeSetTest {
                 new Range(new byte[]{0x70}, new byte[]{0x71}),
                 new Range(new byte[]{0x7f}, new byte[]{(byte)0xff})
         );
-        List<Boolean> added = db.runAsync(tr -> {
+        List<Boolean> added = db.run(tr -> {
             List<CompletableFuture<Boolean>> futures = new ArrayList<>();
             for (Range range : toAdd) {
                 futures.add(rs.insertRange(tr, range));

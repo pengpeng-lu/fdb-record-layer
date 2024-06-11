@@ -31,6 +31,7 @@ import com.apple.foundationdb.record.test.FDBDatabaseExtension;
 import com.apple.foundationdb.record.test.TestKeySpace;
 import com.apple.foundationdb.record.test.TestKeySpacePathManagerExtension;
 import com.apple.foundationdb.record.util.TriFunction;
+import com.apple.foundationdb.test.TestExecutors;
 import com.apple.foundationdb.tuple.Tuple;
 import com.apple.test.BooleanSource;
 import com.apple.test.Tags;
@@ -58,6 +59,7 @@ import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -100,7 +102,7 @@ class TransactionalRunnerTest {
     @Test
     void commits() {
         try (TransactionalRunner runner = defaultTransactionalRunner()) {
-            final String result = runner.runAsync(false, context -> {
+            final String result = runner.run(false, context -> {
                 context.ensureActive().set(key, value);
                 return CompletableFuture.completedFuture("boo");
             }).join();
@@ -128,7 +130,7 @@ class TransactionalRunnerTest {
         try (TransactionalRunner runner = defaultTransactionalRunner()) {
             final Exception cause = new Exception("ABORT");
             final CompletionException exception = assertThrows(CompletionException.class,
-                    () -> runner.runAsync(false, context -> {
+                    () -> runner.run(false, context -> {
                         context.ensureActive().set(key, value);
                         CompletableFuture<String> future = new CompletableFuture<>();
                         future.completeExceptionally(cause);
@@ -187,8 +189,8 @@ class TransactionalRunnerTest {
         // more useful to do expensive operations that might cause issues with the 5 second transaction limit
         final Conflicter conflicter = new Conflicter();
         try (TransactionalRunner runner = defaultTransactionalRunner()) {
-            assertEquals("set key", runner.runAsync(false,
-                    context -> runner.runAsync(false, conflicter::readKeySetOtherKey)
+            assertEquals("set key", runner.run(false,
+                    context -> runner.run(false, conflicter::readKeySetOtherKey)
                             .thenCompose(vignore -> conflicter.readOtherKeySetKey(context))).join());
 
             conflicter.expectValues(runner, conflicter.value, conflicter.otherValue);
@@ -233,11 +235,11 @@ class TransactionalRunnerTest {
     @Test
     void runWithWeakReadSemantics() {
         runWithWeakReadSemantics(
-                (runner, clearWeakReadSemantics) -> runner.runAsync(clearWeakReadSemantics, context -> {
+                (runner, clearWeakReadSemantics) -> runner.run(clearWeakReadSemantics, context -> {
                     context.ensureActive().addWriteConflictKey(key);
                     return context.getReadVersionAsync();
                 }).join(),
-                (runner, clearWeakReadSemantics) -> runner.runAsync(clearWeakReadSemantics, context -> {
+                (runner, clearWeakReadSemantics) -> runner.run(clearWeakReadSemantics, context -> {
                     // will not conflict if we clear weak read semantics
                     context.ensureActive().addReadConflictKey(key);
                     context.ensureActive().addWriteConflictKey(key);
@@ -299,7 +301,8 @@ class TransactionalRunnerTest {
         //needs to be synchronized, since CompletableFuture.runAsync() will push items into the futures() list in another thread
         final List<CompletableFuture<Void>> futures = Collections.synchronizedList(new ArrayList<>());
         try {
-            final ForkJoinPool forkJoinPool = new ForkJoinPool(10);
+            // final ForkJoinPool forkJoinPool = new ForkJoinPool(10);
+            final Executor executor = TestExecutors.defaultThreadPool();
             closesContext((runner, contextFuture, completed) ->
                     // You shouldn't be doing this, but maybe I haven't thought of something similar, but reasonable, where
                     // the executable for `run` does not complete, but the runner is closed
@@ -311,7 +314,7 @@ class TransactionalRunnerTest {
                                 future.join(); // never joins
                                 return completed.incrementAndGet();
                             }),
-                            forkJoinPool)
+                            executor)
             );
         } finally {
             // cleanup the futures, so that the executor used by runAsync doesn't have a bunch of garbage sitting around
@@ -324,7 +327,7 @@ class TransactionalRunnerTest {
     @Test
     void closesContexts() {
         closesContext((runner, contextFuture, completed) ->
-                runner.runAsync(false, context -> {
+                runner.run(false, context -> {
                     contextFuture.complete(context);
                     // the first future will never complete
                     return new CompletableFuture<Void>()
@@ -366,14 +369,14 @@ class TransactionalRunnerTest {
     void mutateContextConfigMdc() {
         final FDBRecordContextConfig.Builder contextConfigBuilder = FDBRecordContextConfig.newBuilder();
         try (TransactionalRunner runner = new TransactionalRunner(database, contextConfigBuilder)) {
-            assertNull(runner.runAsync(false,
+            assertNull(runner.run(false,
                             context -> CompletableFuture.completedFuture(MDC.get("foobar")))
                     .join());
 
             final Map<String, String> mdc = Map.of("foobar", "boxes");
             contextConfigBuilder.setMdcContext(mdc);
 
-            assertEquals(mdc, runner.runAsync(false,
+            assertEquals(mdc, runner.run(false,
                             context -> CompletableFuture.completedFuture(context.getMdcContext()))
                     .join());
         }
@@ -419,15 +422,15 @@ class TransactionalRunnerTest {
                 // Enable version tracking so that the database will use the latest version seen if we have weak read semantics
                 database.setTrackLastSeenVersionOnRead(true);
                 database.setTrackLastSeenVersionOnCommit(false); // disable commit tracking so that the stale read version is definitely the version remembered
-                final Long readVersion = runner.runAsync(false,
+                final Long readVersion = runner.run(false,
                         FDBRecordContext::getReadVersionAsync).join();
                 final FDBDatabase.WeakReadSemantics weakReadSemantics = new FDBDatabase.WeakReadSemantics(
                         readVersion, Long.MAX_VALUE, true);
                 contextConfigBuilder.setWeakReadSemantics(weakReadSemantics);
-                assertEquals(readVersion, runner.runAsync(false, getReadVersionWithWriteConflict)
+                assertEquals(readVersion, runner.run(false, getReadVersionWithWriteConflict)
                         .join());
                 assertEquals(weakReadSemantics, contextConfigBuilder.getWeakReadSemantics());
-                assertNotEquals(readVersion, runner.runAsync(true, getReadVersionWithWriteConflict)
+                assertNotEquals(readVersion, runner.run(true, getReadVersionWithWriteConflict)
                         .join());
                 // clearing the weak read semantics should not clear it on the config builder passed in
                 assertEquals(weakReadSemantics, contextConfigBuilder.getWeakReadSemantics());
@@ -460,7 +463,7 @@ class TransactionalRunnerTest {
         AtomicReference<FDBRecordContext> contextRef = new AtomicReference<>();
         try (TransactionalRunner runner = defaultTransactionalRunner()) {
             final Exception cause = new Exception("ABORT");
-            final CompletableFuture<String> runResult = runner.runAsync(false, context -> {
+            final CompletableFuture<String> runResult = runner.run(false, context -> {
                 context.ensureActive().set(key, value);
                 contextRef.set(context);
                 CompletableFuture<String> future = new CompletableFuture<>();
@@ -523,7 +526,7 @@ class TransactionalRunnerTest {
     }
 
     private static void assertValue(final TransactionalRunner runner, final byte[] key, final byte[] value) {
-        assertArrayEquals(value, runner.runAsync(false, context -> context.ensureActive().get(key)).join());
+        assertArrayEquals(value, runner.run(false, context -> context.ensureActive().get(key)).join());
     }
 
     @Nonnull

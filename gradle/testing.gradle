@@ -221,7 +221,7 @@ tasks.withType(Test).configureEach { task ->
         task.testFramework.options.excludeTags.add('Performance')
 
         if (task.name == 'test') {
-            task.systemProperty('junit.jupiter.execution.parallel.enabled', 'false')
+            task.systemProperty('junit.jupiter.execution.parallel.enabled', 'true')
             task.systemProperty('junit.jupiter.execution.parallel.mode.default', 'same_thread')
             task.systemProperty('junit.jupiter.execution.parallel.mode.classes.default', 'concurrent')
         }

@@ -36,6 +36,7 @@ import com.apple.foundationdb.record.test.FakeClusterFileUtil;
 import com.apple.foundationdb.record.test.TestKeySpace;
 import com.apple.foundationdb.record.test.TestKeySpacePathManagerExtension;
 import com.apple.foundationdb.subspace.Subspace;
+import com.apple.foundationdb.test.TestExecutors;
 import com.apple.foundationdb.tuple.Tuple;
 import com.apple.test.BooleanSource;
 import com.apple.test.Tags;
@@ -56,6 +57,7 @@ import javax.annotation.Nonnull;
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -201,7 +203,8 @@ class FDBDatabaseTest {
             tr.addWriteConflictRange(r.begin, r.end);
             return null;
         });
-        long outOfBandReadVersion = database.database().runAsync(Transaction::getReadVersion).get();
+        final Executor executor = TestExecutors.defaultThreadPool();
+        long outOfBandReadVersion = database.database().runAsync(Transaction::getReadVersion, executor).get();
 
         long readVersion4 = getReadVersionInRetryLoop(database, 0L, 5000L, async);
         assertEquals(readVersion3, readVersion4);
@@ -311,10 +314,11 @@ class FDBDatabaseTest {
     void testPostCommitHooks() {
         final FDBDatabase database = dbExtension.getDatabase();
         final AtomicInteger counter = new AtomicInteger(0);
+        final Executor executor = TestExecutors.defaultThreadPool();
 
         try (FDBRecordContext context = database.openContext()) {
             FDBRecordContext.PostCommit incrementPostCommit = context.getOrCreatePostCommit("foo",
-                    name -> () -> CompletableFuture.runAsync(counter::incrementAndGet));
+                    name -> () -> CompletableFuture.runAsync(counter::incrementAndGet, executor));
 
             // Cannot add a commit by the same name
             assertThrows(RecordCoreArgumentException.class, () -> {

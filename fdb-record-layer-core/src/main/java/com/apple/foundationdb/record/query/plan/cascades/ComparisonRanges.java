@@ -128,12 +128,20 @@ public class ComparisonRanges implements PlanHashable, Correlated<ComparisonRang
     }
 
     public void addAll(@Nonnull ComparisonRanges comparisonRanges) {
-        Preconditions.checkArgument(isEqualities());
+        Preconditions.checkArgument(isUncommitedComparisonRangesEqualities());
         ranges.addAll(comparisonRanges.ranges);
     }
 
     public boolean isEqualities() {
+        return isEqualities(ranges);
+    }
+
+    private boolean isEqualities(@Nonnull final List<ComparisonRange> ranges) {
         return ranges.stream().allMatch(ComparisonRange::isEquality);
+    }
+
+    public boolean isUncommitedComparisonRangesEqualities() {
+        return isEqualities(getUncommittedComparisonRanges());
     }
 
     public int getEqualitiesSize() {
@@ -349,7 +357,7 @@ public class ComparisonRanges implements PlanHashable, Correlated<ComparisonRang
     @SpotBugsSuppressWarnings("EQ_UNUSUAL")
     @SuppressWarnings("EqualsWhichDoesntCheckParameterClass")
     public boolean equals(final Object o) {
-        return semanticEquals(o, AliasMap.identitiesFor(getCorrelatedTo()));
+        return semanticEquals(o, AliasMap.emptyMap());
     }
 
     @Override

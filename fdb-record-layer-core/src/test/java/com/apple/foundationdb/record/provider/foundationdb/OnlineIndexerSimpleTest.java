@@ -63,8 +63,8 @@ import java.util.stream.Collectors;
 import java.util.stream.LongStream;
 
 import static com.apple.foundationdb.record.metadata.Key.Expressions.field;
-import static com.apple.foundationdb.record.provider.foundationdb.OnlineIndexer.DEFAULT_PROGRESS_LOG_INTERVAL;
-import static com.apple.foundationdb.record.provider.foundationdb.OnlineIndexer.DO_NOT_RE_INCREASE_LIMIT;
+import static com.apple.foundationdb.record.provider.foundationdb.OnlineIndexOperationConfig.DEFAULT_PROGRESS_LOG_INTERVAL;
+import static com.apple.foundationdb.record.provider.foundationdb.OnlineIndexOperationConfig.DO_NOT_RE_INCREASE_LIMIT;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.instanceOf;
@@ -91,7 +91,7 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
     private static final Pattern BUILD_RANGES_PATTERN = TestHelpers.eventCountPattern(FDBStoreTimer.Counts.ONLINE_INDEX_BUILDER_RANGES_BY_COUNT);
 
     @Test
-    @SuppressWarnings("deprecation")
+    @SuppressWarnings("removal")
     public void buildEndpointIdempotency() {
         List<TestRecords1Proto.MySimpleRecord> records = LongStream.range(0, 10).mapToObj( val ->
                 TestRecords1Proto.MySimpleRecord.newBuilder().setRecNo(val).setNumValue2((int)val + 1).build()
@@ -221,6 +221,7 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
     }
 
     @Test
+    @SuppressWarnings("removal")
     public void buildRangeTransactional() {
         List<TestRecords1Proto.MySimpleRecord> records = LongStream.range(0, 200).mapToObj( val ->
                 TestRecords1Proto.MySimpleRecord.newBuilder().setRecNo(val).setNumValue2((int)val + 1).build()
@@ -311,6 +312,7 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
     }
 
     @Test
+    @SuppressWarnings("removal")
     public void buildRangeWithNull() {
         List<TestRecords1Proto.MySimpleRecord> records = LongStream.range(0, 200).mapToObj( val ->
                 TestRecords1Proto.MySimpleRecord.newBuilder().setRecNo(val).setNumValue2((int)val + 1).build()
@@ -474,7 +476,7 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
                 .setMdcContext(ImmutableMap.of("mdcKey", "my cool mdc value"))
                 .setMaxAttempts(3)
                 .setConfigLoader(old ->
-                        OnlineIndexer.Config.newBuilder()
+                        OnlineIndexOperationConfig.newBuilder()
                                 .setMaxLimit(100)
                                 .setMaxRetries(queue.size() + 3)
                                 .setRecordsPerSecond(10000)
@@ -628,8 +630,8 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
         try (OnlineIndexer indexer = newIndexerBuilder()
                 .setIndex(index)
                 .build()) {
-            // No need to build range because there is no record.
-            indexer.asyncToSync(FDBStoreTimer.Waits.WAIT_ONLINE_BUILD_INDEX, indexer.buildEndpoints());
+            // Build index, but do not mark readable
+            indexer.asyncToSync(FDBStoreTimer.Waits.WAIT_ONLINE_BUILD_INDEX, indexer.buildIndexAsync(false));
 
             // Do mark the the index as readable.
             assertTrue(indexer.asyncToSync(FDBStoreTimer.Waits.WAIT_ONLINE_BUILD_INDEX, indexer.markReadableIfBuilt()));
@@ -697,7 +699,7 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
     }
 
     @Test
-    void testConfigLoaderInitialLimit() throws Exception {
+    void testConfigLoaderInitialLimit() {
         final Index index = new Index("newIndex", field("num_value_unique"));
         populateData(40);
         final FDBRecordStoreTestBase.RecordMetaDataHook hook = allIndexesHook(List.of(index));
@@ -716,14 +718,12 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
 
     @Tag(Tags.Slow)
     @Test
-    public void testOnlineIndexerBuilderWriteLimitBytes() throws Exception {
+    void testOnlineIndexerBuilderWriteLimitBytes() {
         int numRecords = 127;
         List<TestRecords1Proto.MySimpleRecord> records = LongStream.range(0, numRecords).mapToObj( val ->
                 TestRecords1Proto.MySimpleRecord.newBuilder().setRecNo(val).setNumValue2((int)val + 1).build()
         ).collect(Collectors.toList());
         Index index = new Index("newIndex", field("num_value_2").ungrouped(), IndexTypes.SUM);
-        IndexAggregateFunction aggregateFunction = new IndexAggregateFunction(FunctionNames.SUM, index.getRootExpression(), index.getName());
-        List<String> indexTypes = Collections.singletonList("MySimpleRecord");
         FDBRecordStoreTestBase.RecordMetaDataHook hook = metaDataBuilder -> metaDataBuilder.addIndex("MySimpleRecord", index);
 
         openSimpleMetaData();
@@ -733,8 +733,12 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
         }
 
         openSimpleMetaData(hook);
-        final FDBStoreTimer timer = new FDBStoreTimer();
+        try (FDBRecordContext context = openContext()) {
+            recordStore.clearAndMarkIndexWriteOnly(index.getName()).join();
+            context.commit();
+        }
 
+        final FDBStoreTimer timer = new FDBStoreTimer();
         try (FDBRecordContext context = openContext()) {
             recordStore.checkVersion(null, FDBRecordStoreBase.StoreExistenceCheck.ERROR_IF_NOT_EXISTS).join();
 
@@ -743,49 +747,19 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
                          OnlineIndexer.newBuilder()
                                  .setRecordStore(recordStore)
                                  .setTimer(timer)
-                                 .setIndex("newIndex")
+                                 .setIndex(index.getName())
                                  .setLimit(100000)
                                  .setMaxWriteLimitBytes(1)
                                  .build()) {
-                // this call will "flatten" the staccato iterations to a whole range. Testing compatibility.
+
                 indexer.rebuildIndex(recordStore);
             }
-            recordStore.markIndexReadable("newIndex").join();
-
             assertEquals(numRecords, timer.getCount(FDBStoreTimer.Counts.ONLINE_INDEX_BUILDER_RECORDS_SCANNED));
             assertEquals(numRecords, timer.getCount(FDBStoreTimer.Counts.ONLINE_INDEX_BUILDER_RECORDS_INDEXED));
-
             assertEquals(numRecords - 1, timer.getCount(FDBStoreTimer.Counts.ONLINE_INDEX_BUILDER_RANGES_BY_SIZE));
-            assertEquals(1, timer.getCount(FDBStoreTimer.Counts.ONLINE_INDEX_BUILDER_RANGES_BY_COUNT)); // last item
+            assertEquals(1, timer.getCount(FDBStoreTimer.Counts.ONLINE_INDEX_BUILDER_RANGES_BY_COUNT));
 
-            context.commit();
-        }
-        try (FDBRecordContext context = openContext()) {
-            assertTrue(recordStore.isIndexReadable("newIndex"));
-            recordStore.clearAndMarkIndexWriteOnly("newIndex").join();
-            context.commit();
-        }
-
-        timer.reset();
-        try (FDBRecordContext context = openContext()) {
-            recordStore.checkVersion(null, FDBRecordStoreBase.StoreExistenceCheck.ERROR_IF_NOT_EXISTS).join();
-
-            // Build in this transaction.
-            try (OnlineIndexer indexer =
-                         OnlineIndexer.newBuilder()
-                                 .setRecordStore(recordStore)
-                                 .setTimer(timer)
-                                 .setIndex("newIndex")
-                                 .setLimit(100000)
-                                 .setMaxWriteLimitBytes(1)
-                                 .build()) {
-
-                Key.Evaluated key = indexer.buildUnbuiltRange(Key.Evaluated.scalar(0L), Key.Evaluated.scalar(25L)).join();
-                assertEquals(1, key.getLong(0));
-                assertEquals(1, timer.getCount(FDBStoreTimer.Counts.ONLINE_INDEX_BUILDER_RANGES_BY_SIZE));
-                assertEquals(0, timer.getCount(FDBStoreTimer.Counts.ONLINE_INDEX_BUILDER_RANGES_BY_COUNT));
-            }
-            recordStore.clearAndMarkIndexWriteOnly("newIndex").join();
+            recordStore.clearAndMarkIndexWriteOnly(index.getName()).join();
             context.commit();
         }
 
@@ -801,8 +775,8 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
         }
         assertEquals(numRecords, timer.getCount(FDBStoreTimer.Counts.ONLINE_INDEX_BUILDER_RECORDS_SCANNED));
         assertEquals(numRecords, timer.getCount(FDBStoreTimer.Counts.ONLINE_INDEX_BUILDER_RECORDS_INDEXED));
-        assertEquals(1, timer.getCount(FDBStoreTimer.Counts.ONLINE_INDEX_BUILDER_RANGES_BY_COUNT));
         assertEquals(numRecords - 1, timer.getCount(FDBStoreTimer.Counts.ONLINE_INDEX_BUILDER_RANGES_BY_SIZE));
+        assertEquals(1, timer.getCount(FDBStoreTimer.Counts.ONLINE_INDEX_BUILDER_RANGES_BY_COUNT));
     }
 
     @Test
@@ -946,9 +920,9 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
                 int batchReadVersions = TestHelpers.extractCount(BATCH_GRV_PATTERN, logEvent);
                 int buildRanges = TestHelpers.extractCount(BUILD_RANGES_PATTERN, logEvent);
                 assertThat(buildRanges, lessThanOrEqualTo(batchReadVersions));
-                assertEquals(1, buildRanges, () -> String.format("expected only 1 build range in \"%s\"", logEvent));
+                assertEquals(1, buildRanges, () -> "expected only 1 build range in \"" + logEvent + "\"");
                 int scannedRecords = TestHelpers.extractCount(SCAN_RECORDS_PATTERN, logEvent);
-                assertThat(String.format("expected only %d records scanned in \"%s\"", limit, logEvent), scannedRecords, lessThanOrEqualTo(limit));
+                assertThat("expected only " + limit + " records scanned in \"" + logEvent + "\"", scannedRecords, lessThanOrEqualTo(limit));
             });
         }
 
@@ -999,7 +973,7 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
 
     @Test
     void testIndexingThrottleBooker() {
-        final OnlineIndexer.Config config = OnlineIndexer.Config.newBuilder()
+        final OnlineIndexOperationConfig config = OnlineIndexOperationConfig.newBuilder()
                 .setInitialLimit(4)
                 .setRecordsPerSecond(100)
                 .setIncreaseLimitAfter(5)
@@ -1013,8 +987,7 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
                     Collections.emptyList(),
                     null,
                     config,
-                    false, false, 0
-                    );
+                    false);
 
             final IndexingThrottle.Booker booker = new IndexingThrottle.Booker(common);
             assertEquals(4, booker.getRecordsLimit());
@@ -1072,7 +1045,7 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
 
     @Test
     void testIndexingThrottleBookerExceptions() {
-        final OnlineIndexer.Config config = OnlineIndexer.Config.newBuilder()
+        final OnlineIndexOperationConfig config = OnlineIndexOperationConfig.newBuilder()
                 .setInitialLimit(100)
                 .setRecordsPerSecond(100)
                 .setIncreaseLimitAfter(5)
@@ -1087,8 +1060,7 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
                     Collections.emptyList(),
                     null,
                     config,
-                    false, false, 0
-            );
+                    false);
 
             final IndexingThrottle.Booker booker = new IndexingThrottle.Booker(common);
             assertEquals(100, booker.getRecordsLimit());
@@ -1109,7 +1081,7 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
 
     @Test
     void testIndexingThrottleBookerRepeatingExceptions() {
-        final OnlineIndexer.Config config = OnlineIndexer.Config.newBuilder()
+        final OnlineIndexOperationConfig config = OnlineIndexOperationConfig.newBuilder()
                 .setInitialLimit(1000)
                 .setRecordsPerSecond(100)
                 .setIncreaseLimitAfter(5)
@@ -1124,8 +1096,7 @@ public class OnlineIndexerSimpleTest extends OnlineIndexerTest {
                     Collections.emptyList(),
                     null,
                     config,
-                    false, false, 0
-            );
+                    false);
 
             final IndexingThrottle.Booker booker = new IndexingThrottle.Booker(common);
             postTransaction(booker, 1, 1000, true); // set last failure count to 1000

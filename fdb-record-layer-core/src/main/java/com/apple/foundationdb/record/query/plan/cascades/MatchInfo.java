@@ -69,6 +69,17 @@ public interface MatchInfo {
     @Nonnull
     RegularMatchInfo getRegularMatchInfo();
 
+    /**
+     * Returns a copy of this {@link MatchInfo} that additionally imposes {@code extraConstraint} on any plan
+     * realized from the match, composed with whatever constraints this match already carries.
+     * @param extraConstraint an additional {@link QueryPlanConstraint} to impose
+     * @return a {@link MatchInfo} that carries {@code extraConstraint} in addition to this match's own constraints
+     */
+    @Nonnull
+    default MatchInfo withAdditionalConstraint(@Nonnull final QueryPlanConstraint extraConstraint) {
+        return getRegularMatchInfo().withAdditionalConstraint(extraConstraint);
+    }
+
     @Nonnull
     Map<QueryPredicate, PredicateMapping> collectPulledUpPredicateMappings(@Nonnull RelationalExpression candidateExpression,
                                                                            @Nonnull Set<QueryPredicate> interestingPredicates);
@@ -286,6 +297,17 @@ public interface MatchInfo {
         @Nonnull
         public QueryPlanConstraint getAdditionalPlanConstraint() {
             return additionalPlanConstraint;
+        }
+
+        @Nonnull
+        @Override
+        public RegularMatchInfo withAdditionalConstraint(@Nonnull final QueryPlanConstraint extraConstraint) {
+            if (!extraConstraint.isConstrained()) {
+                return this;
+            }
+            return new RegularMatchInfo(parameterBindingMap, bindingAliasMap, partialMatchMap, predicateMap,
+                    matchedOrderingParts, maxMatchMap, groupByMappings, rollUpToGroupingValues,
+                    additionalPlanConstraint.compose(extraConstraint));
         }
 
         @Override
@@ -631,6 +653,16 @@ public interface MatchInfo {
         @Override
         public GroupByMappings getGroupByMappings() {
             return groupByMappings;
+        }
+
+        @Nonnull
+        @Override
+        public MatchInfo withAdditionalConstraint(@Nonnull final QueryPlanConstraint extraConstraint) {
+            if (!extraConstraint.isConstrained()) {
+                return this;
+            }
+            return new AdjustedMatchInfo(underlying.withAdditionalConstraint(extraConstraint), matchedOrderingParts,
+                    maxMatchMap, groupByMappings);
         }
 
         @Override

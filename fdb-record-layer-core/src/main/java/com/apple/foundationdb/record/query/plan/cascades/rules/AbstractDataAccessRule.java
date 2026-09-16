@@ -23,6 +23,7 @@ package com.apple.foundationdb.record.query.plan.cascades.rules;
 import com.apple.foundationdb.annotation.API;
 import com.apple.foundationdb.record.RecordCoreException;
 import com.apple.foundationdb.record.query.combinatorics.ChooseK;
+import com.apple.foundationdb.record.query.plan.QueryPlanConstraint;
 import com.apple.foundationdb.record.query.plan.cascades.AbstractCascadesRule;
 import com.apple.foundationdb.record.query.plan.cascades.CascadesPlanner;
 import com.apple.foundationdb.record.query.plan.cascades.CascadesRuleCall;
@@ -47,6 +48,7 @@ import com.apple.foundationdb.record.query.plan.cascades.Reference;
 import com.apple.foundationdb.record.query.plan.cascades.ReferencedFieldsConstraint;
 import com.apple.foundationdb.record.query.plan.cascades.RequestedOrdering;
 import com.apple.foundationdb.record.query.plan.cascades.RequestedOrderingConstraint;
+import com.apple.foundationdb.record.query.plan.cascades.ValueEquivalence;
 import com.apple.foundationdb.record.query.plan.cascades.ValueIndexScanMatchCandidate;
 import com.apple.foundationdb.record.query.plan.cascades.events.PlannerEvent.Location;
 import com.apple.foundationdb.record.query.plan.cascades.expressions.LogicalDistinctExpression;
@@ -313,8 +315,9 @@ public abstract class AbstractDataAccessRule extends AbstractCascadesRule<MatchP
         //
         Verify.verify(!matchPartition.isEmpty());
 
+        final var valueEquivalence = ValueEquivalence.constantEquivalenceWithEvaluationContext(call.getEvaluationContext());
         final var bestMaximumCoverageMatches =
-                maximumCoverageMatches(matchPartition, requestedOrderings);
+                maximumCoverageMatches(matchPartition, requestedOrderings, valueEquivalence);
 
         if (bestMaximumCoverageMatches.isEmpty()) {
             return LinkedIdentitySet.of();
@@ -586,14 +589,19 @@ public abstract class AbstractDataAccessRule extends AbstractCascadesRule<MatchP
      * (among the matches given).
      * @param matches candidate matches
      * @param requestedOrderings a set of interesting orderings
+     * @param valueEquivalence a {@link ValueEquivalence} used to relate constant references (e.g. a
+     *        {@link com.apple.foundationdb.record.query.plan.cascades.values.ConstantObjectValue} in the requested
+     *        ordering to a {@link com.apple.foundationdb.record.query.plan.cascades.values.LiteralValue} in a
+     *        candidate's ordering) when checking if a match satisfies a requested ordering
      * @return a collection of {@link PartialMatch}es that are the maximum coverage matches among the matches handed in
      */
     @Nonnull
     @SuppressWarnings({"java:S1905", "java:S135"})
     private static List<Vectored<SingleMatchedAccess>> maximumCoverageMatches(@Nonnull final Collection<? extends PartialMatch> matches,
-                                                                              @Nonnull final Set<RequestedOrdering> requestedOrderings) {
+                                                                              @Nonnull final Set<RequestedOrdering> requestedOrderings,
+                                                                              @Nonnull final ValueEquivalence valueEquivalence) {
         final var singleMatchedAccesses =
-                prepareMatchesAndCompensations(matches, requestedOrderings);
+                prepareMatchesAndCompensations(matches, requestedOrderings, valueEquivalence);
 
         int index = 0;
         final var maximumCoverageMatchesBuilder = ImmutableList.<Vectored<SingleMatchedAccess>>builder();
@@ -644,34 +652,54 @@ public abstract class AbstractDataAccessRule extends AbstractCascadesRule<MatchP
      * directopm.
      * @param partialMatches a collection of partial matches
      * @param requestedOrderings a set of {@link RequestedOrdering}s
+     * @param valueEquivalence a {@link ValueEquivalence} used to relate constant references when checking if a
+     *        match satisfies a requested ordering
      * @return a list of {@link SingleMatchedAccess}s
      */
     @Nonnull
     private static List<SingleMatchedAccess> prepareMatchesAndCompensations(final @Nonnull Collection<? extends PartialMatch> partialMatches,
-                                                                            final @Nonnull Set<RequestedOrdering> requestedOrderings) {
+                                                                            final @Nonnull Set<RequestedOrdering> requestedOrderings,
+                                                                            final @Nonnull ValueEquivalence valueEquivalence) {
         final var partialMatchesWithCompensation = new ArrayList<SingleMatchedAccess>();
-        for (final var partialMatch: partialMatches) {
-            final var topToTopTranslationMapOptional = computeTopToTopTranslationMapMaybe(partialMatch);
+        for (final var originalPartialMatch: partialMatches) {
+            final var topToTopTranslationMapOptional = computeTopToTopTranslationMapMaybe(originalPartialMatch);
             if (topToTopTranslationMapOptional.isEmpty()) {
                 continue;
             }
             final var topToTopTranslationMap = topToTopTranslationMapOptional.get();
-            final var satisfyingOrderingsPairOptional =
-                    satisfiesAnyRequestedOrderings(partialMatch, topToTopTranslationMap, requestedOrderings);
-            if (satisfyingOrderingsPairOptional.isEmpty()) {
+            final var orderingSatisfactionOptional =
+                    satisfiesAnyRequestedOrderings(originalPartialMatch, topToTopTranslationMap, requestedOrderings, valueEquivalence);
+            if (orderingSatisfactionOptional.isEmpty()) {
                 continue;
             }
 
-            if (!partialMatch.getBoundSargableAliases().containsAll(partialMatch.getMatchCandidate().getSargableAliasesRequiredForBinding())) {
+            if (!originalPartialMatch.getBoundSargableAliases().containsAll(originalPartialMatch.getMatchCandidate().getSargableAliasesRequiredForBinding())) {
                 // skip this match since it did not bind all the sargables required by the candidate making it impossible
                 // to create a produce a physical plan.
                 continue;
             }
 
-            final var satisfyingOrderingsPair = satisfyingOrderingsPairOptional.get();
-            final var scanDirection = satisfyingOrderingsPair.getLeft();
+            final var orderingSatisfaction = orderingSatisfactionOptional.get();
+            final var scanDirection = orderingSatisfaction.getScanDirection();
             Verify.verify(scanDirection == ScanDirection.FORWARD || scanDirection == ScanDirection.REVERSE ||
                     scanDirection == ScanDirection.BOTH);
+
+            //
+            // If satisfying the requested ordering(s) relied on relating a bound constant to a literal in the
+            // candidate's ordering (e.g. a ConstantObjectValue in the query matching a LiteralValue in an index's
+            // key expression), impose that relationship as an additional constraint on the match so that it ends up
+            // on the realized plan and is re-checked should this plan ever be considered for reuse with a different
+            // binding.
+            //
+            final var orderingConstraint = orderingSatisfaction.getConstraint();
+            final var partialMatch = orderingConstraint.isConstrained()
+                                      ? new PartialMatch(originalPartialMatch.getBoundAliasMap(),
+                                              originalPartialMatch.getMatchCandidate(),
+                                              originalPartialMatch.getQueryRef(),
+                                              originalPartialMatch.getQueryExpression(),
+                                              originalPartialMatch.getCandidateRef(),
+                                              originalPartialMatch.getMatchInfo().withAdditionalConstraint(orderingConstraint))
+                                      : originalPartialMatch;
 
             final var topAlias = Quantifier.uniqueId();
             final var candidateTopAlias = Quantifier.uniqueId();
@@ -683,7 +711,7 @@ public abstract class AbstractDataAccessRule extends AbstractCascadesRule<MatchP
 
             if (scanDirection == ScanDirection.FORWARD || scanDirection == ScanDirection.BOTH) {
                 partialMatchesWithCompensation.add(new SingleMatchedAccess(partialMatch, compensation,
-                        topAlias, false, topToTopTranslationMap, satisfyingOrderingsPair.getRight()));
+                        topAlias, false, topToTopTranslationMap, orderingSatisfaction.getSatisfyingRequestedOrderings()));
             }
 
             //
@@ -696,7 +724,7 @@ public abstract class AbstractDataAccessRule extends AbstractCascadesRule<MatchP
             //
             if (scanDirection == ScanDirection.REVERSE /* || scanDirection == ScanDirection.BOTH */) {
                 partialMatchesWithCompensation.add(new SingleMatchedAccess(partialMatch, compensation,
-                        topAlias, true, topToTopTranslationMap, satisfyingOrderingsPair.getRight()));
+                        topAlias, true, topToTopTranslationMap, orderingSatisfaction.getSatisfyingRequestedOrderings()));
             }
         }
 
@@ -717,30 +745,35 @@ public abstract class AbstractDataAccessRule extends AbstractCascadesRule<MatchP
      * if the given {@link PartialMatch} were to be planned.
      * @param partialMatch a partial match
      * @param requestedOrderings a set of {@link Ordering}s
+     * @param valueEquivalence a {@link ValueEquivalence} used to relate constant references when checking if the
+     *        match satisfies a requested ordering
      * @return an optional boolean that is {@code Optional.empty()} if no orderings were satisfied,
      *         an optional containing a scan direction if the match can be realized using a forward scan, and/or
      *         a reverse scan respectively
      */
     @Nonnull
     @SuppressWarnings("java:S135")
-    private static Optional<NonnullPair<ScanDirection, Set<RequestedOrdering>>> satisfiesAnyRequestedOrderings(@Nonnull final PartialMatch partialMatch,
-                                                                                                               @Nonnull final TranslationMap topToTopTranslationMap,
-                                                                                                               @Nonnull final Set<RequestedOrdering> requestedOrderings) {
+    private static Optional<OrderingSatisfaction> satisfiesAnyRequestedOrderings(@Nonnull final PartialMatch partialMatch,
+                                                                                 @Nonnull final TranslationMap topToTopTranslationMap,
+                                                                                 @Nonnull final Set<RequestedOrdering> requestedOrderings,
+                                                                                 @Nonnull final ValueEquivalence valueEquivalence) {
         boolean seenForward = false;
         boolean seenReverse = false;
+        var accumulatedConstraint = QueryPlanConstraint.noConstraint();
         final var satisfyingRequestedOrderings = ImmutableSet.<RequestedOrdering>builder();
         for (final var requestedOrdering : requestedOrderings) {
             final var translatedRequestedOrdering =
                     requestedOrdering.translateCorrelations(topToTopTranslationMap, true);
 
             final var scanDirectionForRequestedOrderingOptional =
-                    satisfiesRequestedOrdering(partialMatch, translatedRequestedOrdering);
+                    satisfiesRequestedOrdering(partialMatch, translatedRequestedOrdering, valueEquivalence);
             if (scanDirectionForRequestedOrderingOptional.isPresent()) {
                 satisfyingRequestedOrderings.add(translatedRequestedOrdering);
                 // Note, that a match may satisfy one requested ordering using a forward scan and another requested
                 // ordering using a reverse scan.
-                final var scanDirectionForRequestedOrdering = scanDirectionForRequestedOrderingOptional.get();
-                switch (scanDirectionForRequestedOrdering) {
+                final var scanDirectionAndConstraint = scanDirectionForRequestedOrderingOptional.get();
+                accumulatedConstraint = accumulatedConstraint.compose(scanDirectionAndConstraint.getRight());
+                switch (scanDirectionAndConstraint.getLeft()) {
                     case FORWARD:
                         seenForward = true;
                         break;
@@ -762,11 +795,11 @@ public abstract class AbstractDataAccessRule extends AbstractCascadesRule<MatchP
         }
 
         if (seenForward && seenReverse) {
-            return Optional.of(NonnullPair.of(ScanDirection.BOTH, satisfyingRequestedOrderings.build()));
+            return Optional.of(new OrderingSatisfaction(ScanDirection.BOTH, satisfyingRequestedOrderings.build(), accumulatedConstraint));
         }
 
-        return Optional.of(NonnullPair.of(seenForward ? ScanDirection.FORWARD : ScanDirection.REVERSE,
-                satisfyingRequestedOrderings.build()));
+        return Optional.of(new OrderingSatisfaction(seenForward ? ScanDirection.FORWARD : ScanDirection.REVERSE,
+                satisfyingRequestedOrderings.build(), accumulatedConstraint));
     }
 
     /**
@@ -774,16 +807,26 @@ public abstract class AbstractDataAccessRule extends AbstractCascadesRule<MatchP
      * check the directional requirements of the requested order here.
      * @param partialMatch the partial match to check
      * @param requestedOrdering the requested ordering the caller wants to check the partial match for
-     * @return indicator if the partial match satisfies the requested ordering
+     * @param valueEquivalence a {@link ValueEquivalence} used to relate constant references (e.g. a
+     *        {@link com.apple.foundationdb.record.query.plan.cascades.values.ConstantObjectValue} appearing in the
+     *        requested ordering to a {@link com.apple.foundationdb.record.query.plan.cascades.values.LiteralValue}
+     *        appearing in the candidate's ordering) so that ordering parts that are only equal once their constants
+     *        are resolved are still recognized as matching
+     * @return a scan direction together with the {@link QueryPlanConstraint} that must hold for the ordering to
+     *         actually be satisfied, or {@code Optional.empty()} if the partial match does not satisfy the
+     *         requested ordering at all
      */
-    private static Optional<ScanDirection> satisfiesRequestedOrdering(@Nonnull final PartialMatch partialMatch,
-                                                                      @Nonnull final RequestedOrdering requestedOrdering) {
+    @Nonnull
+    private static Optional<NonnullPair<ScanDirection, QueryPlanConstraint>> satisfiesRequestedOrdering(@Nonnull final PartialMatch partialMatch,
+                                                                      @Nonnull final RequestedOrdering requestedOrdering,
+                                                                      @Nonnull final ValueEquivalence valueEquivalence) {
         if (requestedOrdering.isPreserve()) {
-            return Optional.of(ScanDirection.BOTH);
+            return Optional.of(NonnullPair.of(ScanDirection.BOTH, QueryPlanConstraint.noConstraint()));
         }
 
         // We initially assume that we can do either forward or reverse.
         ScanDirection resolvedScanDirection = ScanDirection.BOTH;
+        var accumulatedConstraint = QueryPlanConstraint.noConstraint();
 
         final var matchInfo = partialMatch.getMatchInfo();
         final var orderingParts = matchInfo.getMatchedOrderingParts();
@@ -792,13 +835,16 @@ public abstract class AbstractDataAccessRule extends AbstractCascadesRule<MatchP
                         .stream()
                         .filter(orderingPart -> orderingPart.getComparisonRangeType() == ComparisonRange.Type.EQUALITY)
                         .map(MatchedOrderingPart::getValue)
-                        .collect(ImmutableSet.toImmutableSet());
+                        .collect(ImmutableList.toImmutableList());
 
         final var orderingPartIterator = orderingParts.iterator();
         for (final var requestedOrderingPart : requestedOrdering.getOrderingParts()) {
             final var requestedOrderingValue = requestedOrderingPart.getValue();
 
-            if (equalityBoundKeys.contains(requestedOrderingValue)) {
+            final var equalityBoundConstraintOptional =
+                    valueContainedSemanticallyConstraint(equalityBoundKeys, requestedOrderingValue, valueEquivalence);
+            if (equalityBoundConstraintOptional.isPresent()) {
+                accumulatedConstraint = accumulatedConstraint.compose(equalityBoundConstraintOptional.get());
                 continue;
             }
 
@@ -811,7 +857,10 @@ public abstract class AbstractDataAccessRule extends AbstractCascadesRule<MatchP
                 }
 
                 final var orderingValue = orderingPart.getValue();
-                if (requestedOrderingValue.equals(orderingValue)) {
+                final var semanticEquals = requestedOrderingValue.semanticEquals(orderingValue, valueEquivalence);
+                if (semanticEquals.isTrue()) {
+                    accumulatedConstraint = accumulatedConstraint.compose(semanticEquals.getConstraint());
+
                     // resolve scan direction for this value
                     final ScanDirection scanDirectionForPart;
                     final var requestedSortOrder = requestedOrderingPart.getSortOrder();
@@ -843,7 +892,32 @@ public abstract class AbstractDataAccessRule extends AbstractCascadesRule<MatchP
                 return Optional.empty();
             }
         }
-        return Optional.of(resolvedScanDirection);
+        return Optional.of(NonnullPair.of(resolvedScanDirection, accumulatedConstraint));
+    }
+
+    /**
+     * Private helper method to check whether {@code value} is semantically equal (per {@code valueEquivalence}) to
+     * any of the {@code values} passed in. Unlike a {@code Set.contains()} lookup, this does not rely on
+     * {@code hashCode()}/{@code equals()}, so it correctly relates e.g. a
+     * {@link com.apple.foundationdb.record.query.plan.cascades.values.ConstantObjectValue} to a
+     * {@link com.apple.foundationdb.record.query.plan.cascades.values.LiteralValue} representing the same constant.
+     * @param values the candidate values
+     * @param value the value to look for
+     * @param valueEquivalence a {@link ValueEquivalence} used to relate constant references
+     * @return {@code Optional.empty()} if {@code value} is not semantically equal to any of {@code values},
+     *         otherwise the {@link QueryPlanConstraint} that must hold for the match that was found to be valid
+     */
+    @Nonnull
+    private static Optional<QueryPlanConstraint> valueContainedSemanticallyConstraint(@Nonnull final Collection<Value> values,
+                                                        @Nonnull final Value value,
+                                                        @Nonnull final ValueEquivalence valueEquivalence) {
+        for (final var candidate : values) {
+            final var semanticEquals = value.semanticEquals(candidate, valueEquivalence);
+            if (semanticEquals.isTrue()) {
+                return Optional.of(semanticEquals.getConstraint());
+            }
+        }
+        return Optional.empty();
     }
 
     /**
@@ -1345,6 +1419,46 @@ public abstract class AbstractDataAccessRule extends AbstractCascadesRule<MatchP
 
         public static <T> Vectored<T> of(@Nonnull final T element, final int position) {
             return new Vectored<>(element, position);
+        }
+    }
+
+    /**
+     * Private helper class capturing the result of checking whether a {@link PartialMatch} satisfies one or more
+     * {@link RequestedOrdering}s: the {@link ScanDirection} that can be used to realize the ordering, the subset of
+     * {@link RequestedOrdering}s that were actually satisfied, and the {@link QueryPlanConstraint} that must hold in
+     * order for the ordering to actually be satisfied (e.g. because satisfaction relied on a
+     * {@link com.apple.foundationdb.record.query.plan.cascades.values.ConstantObjectValue} being equal to a
+     * {@link com.apple.foundationdb.record.query.plan.cascades.values.LiteralValue} in the candidate's ordering).
+     */
+    private static final class OrderingSatisfaction {
+        @Nonnull
+        private final ScanDirection scanDirection;
+        @Nonnull
+        private final Set<RequestedOrdering> satisfyingRequestedOrderings;
+        @Nonnull
+        private final QueryPlanConstraint constraint;
+
+        private OrderingSatisfaction(@Nonnull final ScanDirection scanDirection,
+                                     @Nonnull final Set<RequestedOrdering> satisfyingRequestedOrderings,
+                                     @Nonnull final QueryPlanConstraint constraint) {
+            this.scanDirection = scanDirection;
+            this.satisfyingRequestedOrderings = satisfyingRequestedOrderings;
+            this.constraint = constraint;
+        }
+
+        @Nonnull
+        public ScanDirection getScanDirection() {
+            return scanDirection;
+        }
+
+        @Nonnull
+        public Set<RequestedOrdering> getSatisfyingRequestedOrderings() {
+            return satisfyingRequestedOrderings;
+        }
+
+        @Nonnull
+        public QueryPlanConstraint getConstraint() {
+            return constraint;
         }
     }
 

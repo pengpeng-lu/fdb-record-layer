@@ -23,12 +23,17 @@ package com.apple.foundationdb.record.query.plan.cascades;
 import com.apple.foundationdb.record.EvaluationContext;
 import com.apple.foundationdb.record.query.combinatorics.PartiallyOrderedSet;
 import com.apple.foundationdb.record.query.expressions.Comparisons;
+import com.apple.foundationdb.record.query.plan.QueryPlanConstraint;
 import com.apple.foundationdb.record.query.plan.cascades.Ordering.Binding;
 import com.apple.foundationdb.record.query.plan.cascades.OrderingPart.ProvidedSortOrder;
 import com.apple.foundationdb.record.query.plan.cascades.OrderingPart.RequestedOrderingPart;
 import com.apple.foundationdb.record.query.plan.cascades.OrderingPart.RequestedSortOrder;
+import com.apple.foundationdb.record.query.plan.cascades.predicates.ValuePredicate;
 import com.apple.foundationdb.record.query.plan.cascades.typing.Type;
+import com.apple.foundationdb.record.query.plan.cascades.values.ArithmeticValue;
+import com.apple.foundationdb.record.query.plan.cascades.values.ConstantObjectValue;
 import com.apple.foundationdb.record.query.plan.cascades.values.FieldValue;
+import com.apple.foundationdb.record.query.plan.cascades.values.LiteralValue;
 import com.apple.foundationdb.record.query.plan.cascades.values.QuantifiedObjectValue;
 import com.apple.foundationdb.record.query.plan.cascades.values.RecordConstructorValue;
 import com.apple.foundationdb.record.query.plan.cascades.values.Value;
@@ -365,6 +370,84 @@ class OrderingTest {
                         false);
 
         assertEquals(expectedOrdering, pulledUpOrdering);
+    }
+
+    /**
+     * Verifies that {@link Ordering#pullUp} relates a {@link ConstantObjectValue} to a {@link LiteralValue} of the
+     * same type when pulling an ordering value up through a {@link RecordConstructorValue} column, and that it
+     * carries forward the {@link QueryPlanConstraint} that must hold for that relationship to actually be valid
+     * (see {@link ValueEquivalence#structuralConstantEquivalence()}). This is the mechanism that lets a
+     * {@code RecordQueryMapPlan} over an index scan still be recognized as satisfying a requested order on an
+     * expression like {@code bitand(field, @param)}, when the index's own key expression is
+     * {@code bitand(field, 4)}.
+     */
+    @Test
+    void testPullUpRelatesConstantObjectValueToLiteralOfSameType() {
+        final var recordType = Type.Record.fromFields(false, ImmutableList.of(
+                Type.Record.Field.of(Type.primitiveType(Type.TypeCode.LONG, false), Optional.of("a"))));
+        final var qov = QuantifiedObjectValue.of(Quantifier.current(), recordType);
+        final var a = FieldValue.ofFieldName(qov, "a");
+
+        final var constantValue = ConstantObjectValue.of(CorrelationIdentifier.uniqueId(), "0",
+                Type.primitiveType(Type.TypeCode.LONG, false));
+        final Value literalMaskValue =
+                (Value)new ArithmeticValue.BitAndFn().encapsulate(CallSiteArguments.ofPositional(a, LiteralValue.ofScalar(4L)));
+
+        final var innerOrderedSet = PartiallyOrderedSet.of(ImmutableSet.of(literalMaskValue), ImmutableSetMultimap.of());
+        final var innerOrdering =
+                Ordering.ofOrderingSet(bindingMap(literalMaskValue, ProvidedSortOrder.ASCENDING), innerOrderedSet, false);
+
+        final Value maskColumnValue =
+                (Value)new ArithmeticValue.BitAndFn().encapsulate(CallSiteArguments.ofPositional(a, constantValue));
+        final var rcv2 = RecordConstructorValue.ofColumns(ImmutableList.of(
+                Column.of(Type.Record.Field.of(Type.primitiveType(Type.TypeCode.LONG, false), Optional.of("mask")), maskColumnValue)));
+
+        final var pulledUpOrdering =
+                innerOrdering.pullUp(rcv2, EvaluationContext.empty(), AliasMap.emptyMap(), Set.of());
+
+        final var qovCurrent = QuantifiedObjectValue.of(Quantifier.current(), rcv2.getResultType());
+        final var maskP = ValueTestHelpers.field(qovCurrent, "mask");
+        final var expectedOrdering =
+                Ordering.ofOrderingSet(bindingMap(maskP, ProvidedSortOrder.ASCENDING),
+                        PartiallyOrderedSet.of(ImmutableSet.of(maskP), ImmutableSetMultimap.of()),
+                        false,
+                        QueryPlanConstraint.ofPredicate(new ValuePredicate(constantValue,
+                                new Comparisons.SimpleComparison(Comparisons.Type.EQUALS, 4L))));
+
+        assertEquals(expectedOrdering, pulledUpOrdering);
+        assertEquals(expectedOrdering.getConstraint(), pulledUpOrdering.getConstraint());
+    }
+
+    /**
+     * Companion to {@link #testPullUpRelatesConstantObjectValueToLiteralOfSameType()}: a {@link ConstantObjectValue}
+     * of a different type than the {@link LiteralValue} it is compared against must never be treated as related,
+     * regardless of the actual (unknown, at this parameter-independent stage) value the constant will be bound to.
+     */
+    @Test
+    void testPullUpDoesNotRelateConstantObjectValueToLiteralOfDifferentType() {
+        final var recordType = Type.Record.fromFields(false, ImmutableList.of(
+                Type.Record.Field.of(Type.primitiveType(Type.TypeCode.LONG, false), Optional.of("a"))));
+        final var qov = QuantifiedObjectValue.of(Quantifier.current(), recordType);
+        final var a = FieldValue.ofFieldName(qov, "a");
+
+        final var constantValue = ConstantObjectValue.of(CorrelationIdentifier.uniqueId(), "0",
+                Type.primitiveType(Type.TypeCode.INT, false));
+        final Value literalMaskValue =
+                (Value)new ArithmeticValue.BitAndFn().encapsulate(CallSiteArguments.ofPositional(a, LiteralValue.ofScalar(4L)));
+
+        final var innerOrderedSet = PartiallyOrderedSet.of(ImmutableSet.of(literalMaskValue), ImmutableSetMultimap.of());
+        final var innerOrdering =
+                Ordering.ofOrderingSet(bindingMap(literalMaskValue, ProvidedSortOrder.ASCENDING), innerOrderedSet, false);
+
+        final Value maskColumnValue =
+                (Value)new ArithmeticValue.BitAndFn().encapsulate(CallSiteArguments.ofPositional(a, constantValue));
+        final var rcv2 = RecordConstructorValue.ofColumns(ImmutableList.of(
+                Column.of(Type.Record.Field.of(Type.primitiveType(Type.TypeCode.LONG, false), Optional.of("mask")), maskColumnValue)));
+
+        final var pulledUpOrdering =
+                innerOrdering.pullUp(rcv2, EvaluationContext.empty(), AliasMap.emptyMap(), Set.of());
+
+        assertEquals(Ordering.empty(), pulledUpOrdering);
     }
 
     @Test

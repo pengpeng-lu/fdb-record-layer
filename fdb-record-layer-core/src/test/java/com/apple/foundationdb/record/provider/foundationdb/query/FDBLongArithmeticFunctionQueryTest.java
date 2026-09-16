@@ -45,6 +45,7 @@ import com.apple.foundationdb.record.query.plan.cascades.GraphExpansion;
 import com.apple.foundationdb.record.query.plan.cascades.Quantifier;
 import com.apple.foundationdb.record.query.plan.cascades.Reference;
 import com.apple.foundationdb.record.query.plan.cascades.RequestedOrdering;
+import com.apple.foundationdb.record.query.plan.cascades.UnableToPlanException;
 import com.apple.foundationdb.record.query.plan.cascades.expressions.LogicalSortExpression;
 import com.apple.foundationdb.record.query.plan.cascades.expressions.SelectExpression;
 import com.apple.foundationdb.record.query.plan.cascades.matching.structure.BindingMatcher;
@@ -481,6 +482,150 @@ public class FDBLongArithmeticFunctionQueryTest extends FDBRecordStoreQueryTestB
                     }
                 }
             }
+
+            commit(context);
+        }
+    }
+
+    @DualPlannerTest(planner = DualPlannerTest.Planner.CASCADES)
+    void complexIndexOrderedByConstantMaskValue() {
+        final Index index = new Index("complexIndex", concat(
+                field("str_value_indexed"),
+                sumExpression("num_value_2", "num_value_3_indexed"),
+                bitMaskExpression("num_value_unique", 4))
+        );
+        final RecordMetaDataHook hook = metaDataBuilder -> metaDataBuilder.addIndex("MySimpleRecord", index);
+        setupSimpleRecordStore(hook,
+                (i, builder) -> builder.setRecNo(i).setNumValue3Indexed(i % 3).setNumValue2(i % 5).setStrValueIndexed(i % 2 == 0 ? "even" : "odd").setNumValueUnique(i));
+
+        try (FDBRecordContext context = openContext()) {
+            openSimpleRecordStore(context, hook);
+
+            final String strValueParam = "str";
+            final String sumLowerBound = "sumLowerBound";
+            final String sumUpperBound = "sumUpperBound";
+            final CorrelationIdentifier baseConstantId = CorrelationIdentifier.uniqueId();
+            final ConstantObjectValue maskConstantValue = ConstantObjectValue.of(baseConstantId, "mask", Type.primitiveType(Type.TypeCode.LONG, false));
+            final Bindings bindings = constantBindings(maskConstantValue, 4L)
+                    .childBuilder()
+                    .set(strValueParam, "even")
+                    .set(sumLowerBound, 1)
+                    .set(sumUpperBound, 4)
+                    .build();
+
+            // Same index, predicates, and shape as complexIndexGraphQueryWithMaskInResults() above -- that test
+            // already establishes that this index matches these predicates and sorts by `sum` alone. The only
+            // difference here is that the requested ordering also includes `mask`, and the `4` in `mask`'s
+            // definition is a ConstantObjectValue (as the SQL front end always produces for a literal) rather than
+            // a LiteralValue. Before the fix, AbstractDataAccessRule.satisfiesRequestedOrdering compared ordering
+            // values with plain equals(), so BitAndValue(numUniqueValue, ConstantObjectValue) never compared equal
+            // to the index's BitAndValue(numUniqueValue, LiteralValue(4)), the match was rejected outright, and
+            // planning failed with UnableToPlanException -- exactly the symptom from the original bug report.
+            final RecordQueryPlan plan = planGraph(() -> {
+                Quantifier typeQun = fullTypeScan(recordStore.getRecordMetaData(), "MySimpleRecord");
+
+                final FieldValue strValue = FieldValue.ofFieldName(typeQun.getFlowedObjectValue(), "str_value_indexed");
+                final FieldValue num2Value = FieldValue.ofFieldName(typeQun.getFlowedObjectValue(), "num_value_2");
+                final FieldValue num3Value = FieldValue.ofFieldName(typeQun.getFlowedObjectValue(), "num_value_3_indexed");
+                final FieldValue numUniqueValue = FieldValue.ofFieldName(typeQun.getFlowedObjectValue(), "num_value_unique");
+                final Value sumValue = (Value) new ArithmeticValue.AddFn().encapsulate(CallSiteArguments.ofPositional(num2Value, num3Value));
+                final Value maskValue = (Value) new ArithmeticValue.BitAndFn().encapsulate(CallSiteArguments.ofPositional(
+                        numUniqueValue,
+                        maskConstantValue
+                ));
+                SelectExpression select = GraphExpansion.builder()
+                        .addQuantifier(typeQun)
+                        .addPredicate(new ValuePredicate(strValue, new Comparisons.ParameterComparison(Comparisons.Type.EQUALS, strValueParam)))
+                        .addPredicate(new ValuePredicate(sumValue, new Comparisons.ParameterComparison(Comparisons.Type.GREATER_THAN_OR_EQUALS, sumLowerBound)))
+                        .addPredicate(new ValuePredicate(sumValue, new Comparisons.ParameterComparison(Comparisons.Type.LESS_THAN_OR_EQUALS, sumUpperBound)))
+                        .addResultColumn(Column.of(Optional.of("sum"), sumValue))
+                        .addResultColumn(Column.of(Optional.of("mask"), maskValue))
+                        .addResultColumn(Column.of(Optional.of("id"), FieldValue.ofFieldName(typeQun.getFlowedObjectValue(), "rec_no")))
+                        .build()
+                        .buildSelect();
+                Quantifier selectQun = Quantifier.forEach(Reference.initialOf(select));
+                final AliasMap aliasMap = AliasMap.ofAliases(selectQun.getAlias(), Quantifier.current());
+                return Reference.initialOf(sortExpression(
+                        ImmutableList.of(
+                                FieldValue.ofFieldName(selectQun.getFlowedObjectValue(), "sum").rebase(aliasMap),
+                                FieldValue.ofFieldName(selectQun.getFlowedObjectValue(), "mask").rebase(aliasMap)),
+                        false, selectQun));
+            }, bindings);
+
+            assertMatchesExactly(plan, mapPlan(
+                    indexPlan()
+                            .where(indexName(index.getName()))
+                            .and(scanComparisons(range("[EQUALS $" + strValueParam + ", [GREATER_THAN_OR_EQUALS $" + sumLowerBound + " && LESS_THAN_OR_EQUALS $" + sumUpperBound + "]]")))
+            ));
+
+            commit(context);
+        }
+    }
+
+    /**
+     * Companion to {@link #complexIndexOrderedByConstantMaskValue()}: the fix that lets a bound constant relate to
+     * an index's literal must not spuriously match when the constant is actually bound to a <em>different</em>
+     * value than the index's literal. Here {@code index} is defined over {@code bitand(num_value_unique, 4)}, but
+     * {@code mask} is bound to {@code 5}, so the index's natural order genuinely cannot satisfy an ORDER BY on
+     * {@code bitand(num_value_unique, mask)} -- and since this planner has no explicit sort operator to fall back
+     * on, planning must fail outright rather than silently choose a plan with the wrong order.
+     */
+    @DualPlannerTest(planner = DualPlannerTest.Planner.CASCADES)
+    void complexIndexOrderedByMismatchedConstantMaskValueDoesNotMatch() {
+        final Index index = new Index("complexIndex", concat(
+                field("str_value_indexed"),
+                sumExpression("num_value_2", "num_value_3_indexed"),
+                bitMaskExpression("num_value_unique", 4))
+        );
+        final RecordMetaDataHook hook = metaDataBuilder -> metaDataBuilder.addIndex("MySimpleRecord", index);
+        setupSimpleRecordStore(hook,
+                (i, builder) -> builder.setRecNo(i).setNumValue3Indexed(i % 3).setNumValue2(i % 5).setStrValueIndexed(i % 2 == 0 ? "even" : "odd").setNumValueUnique(i));
+
+        try (FDBRecordContext context = openContext()) {
+            openSimpleRecordStore(context, hook);
+
+            final String strValueParam = "str";
+            final String sumLowerBound = "sumLowerBound";
+            final String sumUpperBound = "sumUpperBound";
+            final CorrelationIdentifier baseConstantId = CorrelationIdentifier.uniqueId();
+            final ConstantObjectValue maskConstantValue = ConstantObjectValue.of(baseConstantId, "mask", Type.primitiveType(Type.TypeCode.LONG, false));
+            final Bindings bindings = constantBindings(maskConstantValue, 5L)
+                    .childBuilder()
+                    .set(strValueParam, "even")
+                    .set(sumLowerBound, 1)
+                    .set(sumUpperBound, 4)
+                    .build();
+
+            assertThrows(UnableToPlanException.class, () -> planGraph(() -> {
+                Quantifier typeQun = fullTypeScan(recordStore.getRecordMetaData(), "MySimpleRecord");
+
+                final FieldValue strValue = FieldValue.ofFieldName(typeQun.getFlowedObjectValue(), "str_value_indexed");
+                final FieldValue num2Value = FieldValue.ofFieldName(typeQun.getFlowedObjectValue(), "num_value_2");
+                final FieldValue num3Value = FieldValue.ofFieldName(typeQun.getFlowedObjectValue(), "num_value_3_indexed");
+                final FieldValue numUniqueValue = FieldValue.ofFieldName(typeQun.getFlowedObjectValue(), "num_value_unique");
+                final Value sumValue = (Value) new ArithmeticValue.AddFn().encapsulate(CallSiteArguments.ofPositional(num2Value, num3Value));
+                final Value maskValue = (Value) new ArithmeticValue.BitAndFn().encapsulate(CallSiteArguments.ofPositional(
+                        numUniqueValue,
+                        maskConstantValue
+                ));
+                SelectExpression select = GraphExpansion.builder()
+                        .addQuantifier(typeQun)
+                        .addPredicate(new ValuePredicate(strValue, new Comparisons.ParameterComparison(Comparisons.Type.EQUALS, strValueParam)))
+                        .addPredicate(new ValuePredicate(sumValue, new Comparisons.ParameterComparison(Comparisons.Type.GREATER_THAN_OR_EQUALS, sumLowerBound)))
+                        .addPredicate(new ValuePredicate(sumValue, new Comparisons.ParameterComparison(Comparisons.Type.LESS_THAN_OR_EQUALS, sumUpperBound)))
+                        .addResultColumn(Column.of(Optional.of("sum"), sumValue))
+                        .addResultColumn(Column.of(Optional.of("mask"), maskValue))
+                        .addResultColumn(Column.of(Optional.of("id"), FieldValue.ofFieldName(typeQun.getFlowedObjectValue(), "rec_no")))
+                        .build()
+                        .buildSelect();
+                Quantifier selectQun = Quantifier.forEach(Reference.initialOf(select));
+                final AliasMap aliasMap = AliasMap.ofAliases(selectQun.getAlias(), Quantifier.current());
+                return Reference.initialOf(sortExpression(
+                        ImmutableList.of(
+                                FieldValue.ofFieldName(selectQun.getFlowedObjectValue(), "sum").rebase(aliasMap),
+                                FieldValue.ofFieldName(selectQun.getFlowedObjectValue(), "mask").rebase(aliasMap)),
+                        false, selectQun));
+            }, bindings));
 
             commit(context);
         }

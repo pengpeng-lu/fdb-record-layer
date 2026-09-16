@@ -411,4 +411,68 @@ public abstract class ValueEquivalence {
             return Optional.of(this);
         }
     }
+
+    @Nonnull
+    public static ValueEquivalence structuralConstantEquivalence() {
+        return STRUCTURAL_CONSTANT_EQUIVALENCE;
+    }
+
+    @Nonnull
+    private static final ValueEquivalence STRUCTURAL_CONSTANT_EQUIVALENCE = new StructuralConstantValueEquivalence();
+
+    /**
+     * Value equivalence implementation that relates a {@link ConstantObjectValue} to a {@link LiteralValue} of a
+     * compatible type <em>unconditionally</em>, i.e. without regard to any specific binding of the constant. Unlike
+     * {@link ConstantValueEquivalence}, this equivalence does not require (or use) an {@link EvaluationContext} and
+     * is therefore safe to use in contexts that must remain independent of any particular set of bindings (e.g.
+     * computing a plan property such as an ordering that must remain valid regardless of what the constant is
+     * eventually bound to). Every relation established by this equivalence is accompanied by a
+     * {@link QueryPlanConstraint} that a caller with access to a real binding must separately verify before relying
+     * on the conclusion that the two values are actually equal.
+     */
+    public static class StructuralConstantValueEquivalence extends ValueEquivalence {
+        @Nonnull
+        @Override
+        public ConstrainedBoolean isDefinedEqual(@Nonnull final Value left, @Nonnull final Value right) {
+            if (left instanceof ConstantObjectValue && right instanceof LiteralValue) {
+                return isDefinedEqual((ConstantObjectValue)left, (LiteralValue<?>)right);
+            } else if (right instanceof ConstantObjectValue && left instanceof LiteralValue) {
+                // flip
+                return isDefinedEqual((ConstantObjectValue)right, (LiteralValue<?>)left);
+            }
+            return falseValue();
+        }
+
+        @Nonnull
+        public ConstrainedBoolean isDefinedEqual(@Nonnull final ConstantObjectValue constantObjectValue,
+                                                 @Nonnull final LiteralValue<?> literalValue) {
+            if (!constantObjectValue.getResultType().equals(literalValue.getResultType())) {
+                return falseValue();
+            }
+
+            final var literalObject = literalValue.getLiteralValue();
+            if (literalObject == null) {
+                return trueWithConstraint(
+                        QueryPlanConstraint.ofPredicate(new ValuePredicate(constantObjectValue,
+                                new Comparisons.NullComparison(Comparisons.Type.IS_NULL))));
+            }
+
+            return trueWithConstraint(
+                    QueryPlanConstraint.ofPredicate(new ValuePredicate(constantObjectValue,
+                            new Comparisons.SimpleComparison(Comparisons.Type.EQUALS, literalObject))));
+        }
+
+        @Nonnull
+        @Override
+        public ConstrainedBoolean isDefinedEqual(@Nonnull final CorrelationIdentifier left, @Nonnull final CorrelationIdentifier right) {
+            return falseValue();
+        }
+
+        @Nonnull
+        @Override
+        protected Optional<ValueEquivalence> computeInverseMaybe() {
+            // this equivalence is symmetrical
+            return Optional.of(this);
+        }
+    }
 }

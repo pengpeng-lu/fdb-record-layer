@@ -26,11 +26,15 @@ import com.apple.foundationdb.record.query.combinatorics.PartiallyOrderedSet;
 import com.apple.foundationdb.record.query.combinatorics.TopologicalSort;
 import com.apple.foundationdb.record.query.expressions.Comparisons;
 import com.apple.foundationdb.record.query.expressions.Comparisons.Comparison;
+import com.apple.foundationdb.record.query.plan.QueryPlanConstraint;
 import com.apple.foundationdb.record.query.plan.cascades.OrderingPart.ProvidedOrderingPart;
 import com.apple.foundationdb.record.query.plan.cascades.OrderingPart.ProvidedSortOrder;
 import com.apple.foundationdb.record.query.plan.cascades.OrderingPart.RequestedOrderingPart;
 import com.apple.foundationdb.record.query.plan.cascades.OrderingPart.RequestedSortOrder;
 import com.apple.foundationdb.record.query.plan.cascades.debug.Debugger;
+import com.apple.foundationdb.record.query.plan.cascades.values.FieldValue;
+import com.apple.foundationdb.record.query.plan.cascades.values.QuantifiedObjectValue;
+import com.apple.foundationdb.record.query.plan.cascades.values.RecordConstructorValue;
 import com.apple.foundationdb.record.query.plan.cascades.values.Value;
 import com.apple.foundationdb.record.query.plan.cascades.values.simplification.DefaultValueSimplificationRuleSet;
 import com.google.common.base.Suppliers;
@@ -196,6 +200,18 @@ public class Ordering {
     private final Supplier<SetMultimap<Value, Binding>> fixedBindingMapSupplier = Suppliers.memoize(this::computeFixedBindingMap);
 
     /**
+     * A {@link QueryPlanConstraint} that must hold in order for this ordering to actually be valid. This is
+     * non-trivial when establishing part of this ordering relied on relating a
+     * {@link com.apple.foundationdb.record.query.plan.cascades.values.ConstantObjectValue} to a
+     * {@link com.apple.foundationdb.record.query.plan.cascades.values.LiteralValue} without regard to any specific
+     * binding (see {@link ValueEquivalence#structuralConstantEquivalence()}). A caller with access to a real
+     * {@link EvaluationContext} (e.g. a planner rule) is expected to verify this constraint before relying on this
+     * ordering, and to carry it forward onto any plan it realizes using this ordering.
+     */
+    @Nonnull
+    private final QueryPlanConstraint constraint;
+
+    /**
      * Primary constructor. Protected from the outside world.
      * @param bindingMap a multimap of bindings
      * @param orderingSet a {@link PartiallyOrderedSet} of {@link Value}s
@@ -206,11 +222,33 @@ public class Ordering {
                        @Nonnull final PartiallyOrderedSet<Value> orderingSet,
                        final boolean isDistinct,
                        @Nonnull final BiConsumer<SetMultimap<Value, Binding>, PartiallyOrderedSet<Value>> sanityCheckConsumer) {
+        this(bindingMap, orderingSet, isDistinct, QueryPlanConstraint.noConstraint(), sanityCheckConsumer);
+    }
+
+    /**
+     * Primary constructor. Protected from the outside world.
+     * @param bindingMap a multimap of bindings
+     * @param orderingSet a {@link PartiallyOrderedSet} of {@link Value}s
+     * @param isDistinct an indicator if this ordering is strict
+     * @param constraint a {@link QueryPlanConstraint} that must hold in order for this ordering to be valid
+     * @param sanityCheckConsumer a consumer that is executed in an insane environment
+     */
+    protected Ordering(@Nonnull final SetMultimap<Value, Binding> bindingMap,
+                       @Nonnull final PartiallyOrderedSet<Value> orderingSet,
+                       final boolean isDistinct,
+                       @Nonnull final QueryPlanConstraint constraint,
+                       @Nonnull final BiConsumer<SetMultimap<Value, Binding>, PartiallyOrderedSet<Value>> sanityCheckConsumer) {
         Debugger.sanityCheck(() -> sanityCheckConsumer.accept(bindingMap, orderingSet));
 
         this.orderingSet = orderingSet;
         this.bindingMap = ImmutableSetMultimap.copyOf(bindingMap);
         this.isDistinct = isDistinct;
+        this.constraint = constraint;
+    }
+
+    @Nonnull
+    public QueryPlanConstraint getConstraint() {
+        return constraint;
     }
 
     @Nonnull
@@ -489,11 +527,37 @@ public class Ordering {
                 value.pullUp(pulledUpBindingMap.keySet(), evaluationContext, aliasMap, constantAliases,
                         Quantifier.current());
 
-        final var mappedOrderingSet = getOrderingSet().mapAll(pulledUpValuesMultimap);
+        //
+        // The generic pull-up logic above can only relate a value in this ordering to a value in the output value
+        // space if the two are structurally identical (modulo the alias map). That is too strict for ordering
+        // values that only differ in that a constant appears as a ConstantObjectValue on one side (as is always the
+        // case for a value derived from a query literal) and as a LiteralValue on the other (as is the case for a
+        // value derived from an index's key expression). Attempt a supplementary, constant-aware match for any
+        // ordering values that the generic logic above was unable to relate, carrying forward the
+        // QueryPlanConstraint that must hold in order for the relationship to actually be valid. It is the
+        // responsibility of a caller with access to a real EvaluationContext (i.e. a planner rule, not a
+        // parameter-independent plan property) to verify that constraint before relying on the resulting ordering.
+        //
+        final var unresolvedValues = Sets.difference(pulledUpBindingMap.keySet(), pulledUpValuesMultimap.keySet());
+        var supplementalConstraint = QueryPlanConstraint.noConstraint();
+        Multimap<Value, Value> effectivePulledUpValuesMultimap = pulledUpValuesMultimap;
+        if (!unresolvedValues.isEmpty()) {
+            final var supplementalMatch = supplementalConstantAwarePullUp(unresolvedValues, value, aliasMap);
+            if (!supplementalMatch.getPulledUpValuesMultimap().isEmpty()) {
+                effectivePulledUpValuesMultimap =
+                        ImmutableSetMultimap.<Value, Value>builder()
+                                .putAll(pulledUpValuesMultimap)
+                                .putAll(supplementalMatch.getPulledUpValuesMultimap())
+                                .build();
+            }
+            supplementalConstraint = supplementalMatch.getConstraint();
+        }
+
+        final var mappedOrderingSet = getOrderingSet().mapAll(effectivePulledUpValuesMultimap);
         final var mappedValues = mappedOrderingSet.getSet();
         final var bindingMapBuilder = ImmutableSetMultimap.<Value, Binding>builder();
 
-        for (final var entry : pulledUpValuesMultimap.asMap().entrySet()) {
+        for (final var entry : effectivePulledUpValuesMultimap.asMap().entrySet()) {
             for (final var pulledUpValue: entry.getValue()) {
                 if (mappedValues.contains(pulledUpValue)) {
                     Verify.verify(pulledUpBindingMap.containsKey(entry.getKey()));
@@ -502,7 +566,88 @@ public class Ordering {
             }
         }
 
-        return Ordering.ofOrderingSet(bindingMapBuilder.build(), mappedOrderingSet, isDistinct());
+        return Ordering.ofOrderingSet(bindingMapBuilder.build(), mappedOrderingSet, isDistinct(),
+                getConstraint().compose(supplementalConstraint));
+    }
+
+    /**
+     * Private helper method that attempts to relate {@code unresolvedValues} (ordering values of {@code this}
+     * ordering that the generic, structural pull-up logic in {@link #pullUp} was unable to relate to a value in
+     * {@code value}'s result space) to a top-level column of {@code value}, using
+     * {@link ValueEquivalence#structuralConstantEquivalence()}. This only handles the case where {@code value} is a
+     * {@link RecordConstructorValue}, which covers the callers of {@link #pullUp} in
+     * {@code OrderingProperty} (a map plan's or a streaming aggregation plan's result value).
+     * @param unresolvedValues ordering values that could not be related structurally
+     * @param value the value that ordering values are being pulled up through
+     * @return a {@link SupplementalPullUpMatch} capturing any newly-related values together with the
+     *         {@link QueryPlanConstraint} that must hold for those relationships to be valid
+     */
+    @Nonnull
+    private static SupplementalPullUpMatch supplementalConstantAwarePullUp(@Nonnull final Set<Value> unresolvedValues,
+                                                                            @Nonnull final Value value,
+                                                                            @Nonnull final AliasMap aliasMap) {
+        if (!(value instanceof RecordConstructorValue)) {
+            return SupplementalPullUpMatch.EMPTY;
+        }
+
+        final var valueEquivalence =
+                ValueEquivalence.fromAliasMap(aliasMap).then(ValueEquivalence.structuralConstantEquivalence());
+        final var resultMultimapBuilder = ImmutableSetMultimap.<Value, Value>builder();
+        var accumulatedConstraint = QueryPlanConstraint.noConstraint();
+
+        for (final var unresolvedValue : unresolvedValues) {
+            for (final var column : ((RecordConstructorValue)value).getColumns()) {
+                // Note the direction: aliasMap relates the map's inner alias (used by column.getValue()) to
+                // Quantifier.current() (used by unresolvedValue), so column.getValue() must be the left-hand side.
+                final var semanticEquals = column.getValue().semanticEquals(unresolvedValue, valueEquivalence);
+                if (semanticEquals.isTrue()) {
+                    final var base = QuantifiedObjectValue.of(Quantifier.current(), value.getResultType());
+                    final var fieldNameOptional = column.getField().getFieldNameOptional();
+                    final var pulledUpValue = fieldNameOptional.isPresent()
+                                               ? FieldValue.ofFieldName(base, fieldNameOptional.get())
+                                               : FieldValue.ofOrdinalNumber(base, column.getField().getFieldIndexOptional()
+                                                       .orElseThrow(() -> new RecordCoreException("column has neither a name nor an index")));
+                    resultMultimapBuilder.put(unresolvedValue, pulledUpValue);
+                    accumulatedConstraint = accumulatedConstraint.compose(semanticEquals.getConstraint());
+                    break;
+                }
+            }
+        }
+
+        final var resultMultimap = resultMultimapBuilder.build();
+        return resultMultimap.isEmpty()
+               ? SupplementalPullUpMatch.EMPTY
+               : new SupplementalPullUpMatch(resultMultimap, accumulatedConstraint);
+    }
+
+    /**
+     * Private helper class capturing the result of {@link #supplementalConstantAwarePullUp}.
+     */
+    private static final class SupplementalPullUpMatch {
+        @Nonnull
+        private static final SupplementalPullUpMatch EMPTY =
+                new SupplementalPullUpMatch(ImmutableSetMultimap.of(), QueryPlanConstraint.noConstraint());
+
+        @Nonnull
+        private final Multimap<Value, Value> pulledUpValuesMultimap;
+        @Nonnull
+        private final QueryPlanConstraint constraint;
+
+        private SupplementalPullUpMatch(@Nonnull final Multimap<Value, Value> pulledUpValuesMultimap,
+                                        @Nonnull final QueryPlanConstraint constraint) {
+            this.pulledUpValuesMultimap = pulledUpValuesMultimap;
+            this.constraint = constraint;
+        }
+
+        @Nonnull
+        public Multimap<Value, Value> getPulledUpValuesMultimap() {
+            return pulledUpValuesMultimap;
+        }
+
+        @Nonnull
+        public QueryPlanConstraint getConstraint() {
+            return constraint;
+        }
     }
 
     @Nonnull
@@ -1217,6 +1362,15 @@ public class Ordering {
                                          @Nonnull final PartiallyOrderedSet<Value> orderingSet,
                                          final boolean isDistinct) {
         return new Ordering(bindingMap, orderingSet, isDistinct,
+                normalizationCheckConsumer().andThen(Ordering::singularFixedBindingCheck).andThen(Ordering::noChooseBindingCheck));
+    }
+
+    @Nonnull
+    public static Ordering ofOrderingSet(@Nonnull final SetMultimap<Value, Binding> bindingMap,
+                                         @Nonnull final PartiallyOrderedSet<Value> orderingSet,
+                                         final boolean isDistinct,
+                                         @Nonnull final QueryPlanConstraint constraint) {
+        return new Ordering(bindingMap, orderingSet, isDistinct, constraint,
                 normalizationCheckConsumer().andThen(Ordering::singularFixedBindingCheck).andThen(Ordering::noChooseBindingCheck));
     }
 

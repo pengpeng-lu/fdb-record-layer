@@ -94,6 +94,22 @@ public class RemoveSortRule extends AbstractCascadesRule<LogicalSortExpression> 
         final Set<Value> sortValuesSet = requestedOrderingParts.stream().map(OrderingPart::getValue).collect(Collectors.toSet());
 
         final Ordering ordering = innerPlanPartition.getPartitionPropertyValue(OrderingProperty.ordering());
+
+        //
+        // Establishing (part of) this ordering may have relied on relating a bound constant to a literal in the
+        // underlying scan's ordering without regard to any specific binding (see Ordering#pullUp and
+        // ValueEquivalence#structuralConstantEquivalence()) -- necessarily so, since OrderingProperty must remain
+        // independent of any particular set of bindings. Now that we are in a rule (as opposed to computing a
+        // memoized, parameter-independent property), we do have access to the real EvaluationContext for this
+        // planning attempt, and must verify that the constraint the ordering carries actually holds before relying
+        // on it to elide the sort. If the underlying access is later reused as-is by AbstractDataAccessRule, the same
+        // relationship is already imposed on the realized plan as a QueryPlanConstraint, so no additional plan
+        // constraint needs to be attached here.
+        //
+        if (!ordering.getConstraint().compileTimeEval(call.getEvaluationContext())) {
+            return;
+        }
+
         final Set<Value> equalityBoundKeys = ordering.getEqualityBoundValues();
         int equalityBoundUnsorted = equalityBoundKeys.size();
 

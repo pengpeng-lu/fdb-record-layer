@@ -25,16 +25,12 @@ import com.apple.foundationdb.record.RecordCoreException;
 import com.apple.foundationdb.record.query.expressions.Comparisons;
 import com.apple.foundationdb.record.query.plan.QueryPlanConstraint;
 import com.apple.foundationdb.record.query.plan.cascades.predicates.ValuePredicate;
-import com.apple.foundationdb.record.query.plan.cascades.typing.Type;
-import com.apple.foundationdb.record.query.plan.cascades.values.ArithmeticValue;
 import com.apple.foundationdb.record.query.plan.cascades.values.ConstantObjectValue;
 import com.apple.foundationdb.record.query.plan.cascades.values.LiteralValue;
 import com.apple.foundationdb.record.query.plan.cascades.values.QuantifiedValue;
 import com.apple.foundationdb.record.query.plan.cascades.values.Value;
 import com.google.common.base.Suppliers;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 
 import javax.annotation.Nonnull;
 import java.util.LinkedHashMap;
@@ -70,16 +66,6 @@ import static com.apple.foundationdb.record.query.plan.cascades.ConstrainedBoole
  * of this class if necessary.
  */
 public abstract class ValueEquivalence {
-    /**
-     * Operators for which an {@code INT}/{@code LONG} operand mismatch does not change the result; excludes e.g.
-     * {@code DIV}/{@code MOD}, which can behave differently once an operand is widened.
-     */
-    @Nonnull
-    private static final Set<ArithmeticValue.LogicalOperator> INT_LONG_WIDENING_SAFE_LOGICAL_OPERATORS =
-            ImmutableSet.of(ArithmeticValue.LogicalOperator.ADD, ArithmeticValue.LogicalOperator.SUB,
-                    ArithmeticValue.LogicalOperator.MUL, ArithmeticValue.LogicalOperator.BITOR,
-                    ArithmeticValue.LogicalOperator.BITAND, ArithmeticValue.LogicalOperator.BITXOR);
-
     @Nonnull
     @SuppressWarnings("this-escape")
     private final Supplier<Optional<ValueEquivalence>> inverseOptionalSupplier = Suppliers.memoize(this::computeInverseMaybe);
@@ -94,83 +80,6 @@ public abstract class ValueEquivalence {
     @Nonnull
     public abstract ConstrainedBoolean isDefinedEqual(@Nonnull CorrelationIdentifier left,
                                                       @Nonnull CorrelationIdentifier right);
-
-    /**
-     * Helper for subclasses that relate constants of matching types: additionally recognizes two
-     * {@link ArithmeticValue}s as equal when they only differ in that one operand is {@code INT}-typed on one side
-     * and {@code LONG}-typed on the other, since {@link ArithmeticValue#equalsWithoutChildren(Value)} otherwise
-     * blocks recursion into the operands (where a subclass's own constant matching would apply) whenever the
-     * resolved physical operators differ.
-     */
-    @Nonnull
-    protected final ConstrainedBoolean isDefinedEqualForArithmeticValues(@Nonnull final Value left,
-                                                                         @Nonnull final Value right) {
-        if (!(left instanceof ArithmeticValue) || !(right instanceof ArithmeticValue)) {
-            return falseValue();
-        }
-
-        final var leftArithmeticValue = (ArithmeticValue)left;
-        final var rightArithmeticValue = (ArithmeticValue)right;
-        if (leftArithmeticValue.getLogicalOperator() != rightArithmeticValue.getLogicalOperator()
-                || !INT_LONG_WIDENING_SAFE_LOGICAL_OPERATORS.contains(leftArithmeticValue.getLogicalOperator())
-                || !left.getResultType().equals(right.getResultType())) {
-            return falseValue();
-        }
-
-        final var leftChildren = ImmutableList.copyOf(left.getChildren());
-        final var rightChildren = ImmutableList.copyOf(right.getChildren());
-        if (leftChildren.size() != 2 || rightChildren.size() != 2) {
-            return falseValue();
-        }
-
-        var constraint = alwaysTrue();
-        for (int i = 0; i < 2; i++) {
-            final var leftChild = leftChildren.get(i);
-            final var rightChild = rightChildren.get(i);
-            if (!isIntLongWideningCompatible(leftChild.getResultType().getTypeCode(), rightChild.getResultType().getTypeCode())) {
-                return falseValue();
-            }
-
-            final var childEquals = leftChild.semanticEquals(rightChild, this);
-            if (childEquals.isFalse()) {
-                return falseValue();
-            }
-            constraint = constraint.composeWithOther(childEquals);
-        }
-        return constraint;
-    }
-
-    private static boolean isIntLongWideningCompatible(@Nonnull final Type.TypeCode left, @Nonnull final Type.TypeCode right) {
-        if (left == right) {
-            return true;
-        }
-        return (left == Type.TypeCode.INT && right == Type.TypeCode.LONG)
-                || (left == Type.TypeCode.LONG && right == Type.TypeCode.INT);
-    }
-
-    /**
-     * Coerces {@code literalObject} to match {@code targetTypeCode} when the two differ only by {@code INT}/
-     * {@code LONG}, since {@link Comparisons#evalComparison} falls back to {@link Object#equals(Object)}, and a
-     * boxed {@link Long} is never {@code equals()} to a boxed {@link Integer} even when numerically identical.
-     * Returns {@code literalObject} unchanged for any other combination of types.
-     * @return the coerced literal, or {@code Optional.empty()} if a {@code LONG} literal doesn't fit an
-     *         {@code INT}-typed target without truncation
-     */
-    @Nonnull
-    private static Optional<Object> coerceNumericLiteralToTypeCode(@Nonnull final Type.TypeCode targetTypeCode,
-                                                                    @Nonnull final Object literalObject) {
-        if (targetTypeCode == Type.TypeCode.LONG && literalObject instanceof Integer) {
-            return Optional.of(((Integer)literalObject).longValue());
-        }
-        if (targetTypeCode == Type.TypeCode.INT && literalObject instanceof Long) {
-            final long longValue = (Long)literalObject;
-            if (longValue < Integer.MIN_VALUE || longValue > Integer.MAX_VALUE) {
-                return Optional.empty();
-            }
-            return Optional.of((int)longValue);
-        }
-        return Optional.of(literalObject);
-    }
 
     /**
      * Method that returns the inverse of this value equivalence. Note that the inverse may not exist due to
@@ -459,7 +368,7 @@ public abstract class ValueEquivalence {
                 // flip
                 return isDefinedEqual((ConstantObjectValue)right, (LiteralValue<?>)left);
             }
-            return isDefinedEqualForArithmeticValues(left, right);
+            return falseValue();
         }
 
         @Nonnull
@@ -477,21 +386,14 @@ public abstract class ValueEquivalence {
                 return falseValue();
             }
 
-            final var coercedLiteralObjectOptional =
-                    coerceNumericLiteralToTypeCode(constantObjectValue.getResultType().getTypeCode(), literalObject);
-            if (coercedLiteralObjectOptional.isEmpty()) {
-                return falseValue();
-            }
-            final var coercedLiteralObject = coercedLiteralObjectOptional.get();
-
             final boolean comparisonResult =
                     Objects.requireNonNull(Comparisons.evalComparison(Comparisons.Type.EQUALS, constantObject,
-                            coercedLiteralObject));
+                            literalValue.getLiteralValue()));
 
             if (comparisonResult) {
                 return trueWithConstraint(
                         QueryPlanConstraint.ofPredicate(new ValuePredicate(constantObjectValue,
-                                new Comparisons.SimpleComparison(Comparisons.Type.EQUALS, coercedLiteralObject))));
+                                new Comparisons.SimpleComparison(Comparisons.Type.EQUALS, literalObject))));
             }
             return falseValue();
         }
@@ -538,14 +440,13 @@ public abstract class ValueEquivalence {
                 // flip
                 return isDefinedEqual((ConstantObjectValue)right, (LiteralValue<?>)left);
             }
-            return isDefinedEqualForArithmeticValues(left, right);
+            return falseValue();
         }
 
         @Nonnull
         public ConstrainedBoolean isDefinedEqual(@Nonnull final ConstantObjectValue constantObjectValue,
                                                  @Nonnull final LiteralValue<?> literalValue) {
-            final var constantTypeCode = constantObjectValue.getResultType().getTypeCode();
-            if (!isIntLongWideningCompatible(constantTypeCode, literalValue.getResultType().getTypeCode())) {
+            if (!constantObjectValue.getResultType().equals(literalValue.getResultType())) {
                 return falseValue();
             }
 
@@ -556,14 +457,9 @@ public abstract class ValueEquivalence {
                                 new Comparisons.NullComparison(Comparisons.Type.IS_NULL))));
             }
 
-            final var coercedLiteralObjectOptional = coerceNumericLiteralToTypeCode(constantTypeCode, literalObject);
-            if (coercedLiteralObjectOptional.isEmpty()) {
-                return falseValue();
-            }
-
             return trueWithConstraint(
                     QueryPlanConstraint.ofPredicate(new ValuePredicate(constantObjectValue,
-                            new Comparisons.SimpleComparison(Comparisons.Type.EQUALS, coercedLiteralObjectOptional.get()))));
+                            new Comparisons.SimpleComparison(Comparisons.Type.EQUALS, literalObject))));
         }
 
         @Nonnull

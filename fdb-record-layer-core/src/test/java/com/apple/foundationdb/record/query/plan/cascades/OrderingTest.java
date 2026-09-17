@@ -419,9 +419,10 @@ class OrderingTest {
     }
 
     /**
-     * Companion to {@link #testPullUpRelatesConstantObjectValueToLiteralOfSameType()}: a {@link ConstantObjectValue}
-     * of a different type than the {@link LiteralValue} it is compared against must never be treated as related,
-     * regardless of the actual (unknown, at this parameter-independent stage) value the constant will be bound to.
+     * Companion to {@link #testPullUpRelatesConstantObjectValueToLiteralOfSameType()}: a genuinely unrelated type
+     * must never be treated as related (unlike {@code INT}/{@code LONG}, see
+     * {@link #testPullUpRelatesConstantObjectValueToWidenedIntLongLiteral()}). Uses {@code add} rather than
+     * {@code bitand} since {@code bitand} only supports {@code INT}/{@code LONG} operands.
      */
     @Test
     void testPullUpDoesNotRelateConstantObjectValueToLiteralOfDifferentType() {
@@ -431,9 +432,41 @@ class OrderingTest {
         final var a = FieldValue.ofFieldName(qov, "a");
 
         final var constantValue = ConstantObjectValue.of(CorrelationIdentifier.uniqueId(), "0",
-                Type.primitiveType(Type.TypeCode.INT, false));
+                Type.primitiveType(Type.TypeCode.DOUBLE, false));
         final Value literalMaskValue =
-                (Value)new ArithmeticValue.BitAndFn().encapsulate(CallSiteArguments.ofPositional(a, LiteralValue.ofScalar(4L)));
+                (Value)new ArithmeticValue.AddFn().encapsulate(CallSiteArguments.ofPositional(a, LiteralValue.ofScalar(4L)));
+
+        final var innerOrderedSet = PartiallyOrderedSet.of(ImmutableSet.of(literalMaskValue), ImmutableSetMultimap.of());
+        final var innerOrdering =
+                Ordering.ofOrderingSet(bindingMap(literalMaskValue, ProvidedSortOrder.ASCENDING), innerOrderedSet, false);
+
+        final Value maskColumnValue =
+                (Value)new ArithmeticValue.AddFn().encapsulate(CallSiteArguments.ofPositional(a, constantValue));
+        final var rcv2 = RecordConstructorValue.ofColumns(ImmutableList.of(
+                Column.of(Type.Record.Field.of(Type.primitiveType(Type.TypeCode.DOUBLE, false), Optional.of("mask")), maskColumnValue)));
+
+        final var pulledUpOrdering =
+                innerOrdering.pullUp(rcv2, EvaluationContext.empty(), AliasMap.emptyMap(), Set.of());
+
+        assertEquals(Ordering.empty(), pulledUpOrdering);
+    }
+
+    /**
+     * Companion to {@link #testPullUpDoesNotRelateConstantObjectValueToLiteralOfDifferentType()}: an {@code INT}
+     * constant must still relate to a {@code LONG} literal (and vice versa), since combining a {@code LONG} field
+     * with either produces the same result for {@code bitand}.
+     */
+    @Test
+    void testPullUpRelatesConstantObjectValueToWidenedIntLongLiteral() {
+        final var recordType = Type.Record.fromFields(false, ImmutableList.of(
+                Type.Record.Field.of(Type.primitiveType(Type.TypeCode.LONG, false), Optional.of("a"))));
+        final var qov = QuantifiedObjectValue.of(Quantifier.current(), recordType);
+        final var a = FieldValue.ofFieldName(qov, "a");
+
+        final var constantValue = ConstantObjectValue.of(CorrelationIdentifier.uniqueId(), "0",
+                Type.primitiveType(Type.TypeCode.LONG, false));
+        final Value literalMaskValue =
+                (Value)new ArithmeticValue.BitAndFn().encapsulate(CallSiteArguments.ofPositional(a, LiteralValue.ofScalar(4)));
 
         final var innerOrderedSet = PartiallyOrderedSet.of(ImmutableSet.of(literalMaskValue), ImmutableSetMultimap.of());
         final var innerOrdering =
@@ -447,7 +480,18 @@ class OrderingTest {
         final var pulledUpOrdering =
                 innerOrdering.pullUp(rcv2, EvaluationContext.empty(), AliasMap.emptyMap(), Set.of());
 
-        assertEquals(Ordering.empty(), pulledUpOrdering);
+        final var qovCurrent = QuantifiedObjectValue.of(Quantifier.current(), rcv2.getResultType());
+        final var maskP = ValueTestHelpers.field(qovCurrent, "mask");
+        final var expectedOrdering =
+                Ordering.ofOrderingSet(bindingMap(maskP, ProvidedSortOrder.ASCENDING),
+                        PartiallyOrderedSet.of(ImmutableSet.of(maskP), ImmutableSetMultimap.of()),
+                        false,
+                        // coerced to LONG so re-evaluation against the constant's own type works
+                        QueryPlanConstraint.ofPredicate(new ValuePredicate(constantValue,
+                                new Comparisons.SimpleComparison(Comparisons.Type.EQUALS, 4L))));
+
+        assertEquals(expectedOrdering, pulledUpOrdering);
+        assertEquals(expectedOrdering.getConstraint(), pulledUpOrdering.getConstraint());
     }
 
     @Test

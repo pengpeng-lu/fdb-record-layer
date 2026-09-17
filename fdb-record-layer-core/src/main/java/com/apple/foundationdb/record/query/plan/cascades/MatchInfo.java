@@ -70,8 +70,6 @@ public interface MatchInfo {
     RegularMatchInfo getRegularMatchInfo();
 
     /**
-     * Returns a copy of this {@link MatchInfo} that additionally imposes {@code extraConstraint} on any plan
-     * realized from the match, composed with whatever constraints this match already carries.
      * @param extraConstraint an additional {@link QueryPlanConstraint} to impose
      * @return a {@link MatchInfo} that carries {@code extraConstraint} in addition to this match's own constraints
      */

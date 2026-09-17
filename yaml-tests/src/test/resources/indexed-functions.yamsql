@@ -114,4 +114,42 @@ test_block:
           {A: 7, B: 7, C: -2, D: 1, E: 'alpha'},
           {A: 8, B: 8, C: -4, D: 0, E: 'beta'},
         ]
+---
+test_block:
+  tests:
+    -
+      # `2` here becomes a ConstantObjectValue; dMask2's own `2` stays a LiteralValue since DDL literal
+      # processing is disabled. The two must be recognized as equal for this ordering to match.
+      - query: select a, d from t order by d & 2;
+      - explainContains: "ISCAN(DMASK2 <,>)"
+      - result: [
+          {A: 3, D: 1},
+          {A: 4, D: 0},
+          {A: 7, D: 1},
+          {A: 8, D: 0},
+          {A: 1, D: 3},
+          {A: 2, D: 2},
+          {A: 5, D: 3},
+          {A: 6, D: 2},
+          {A: 9, D: 3},
+        ]
+    -
+      # Same shape, but `d & 1` matches dMask1's order instead, in a different row order.
+      - query: select a, d from t order by d & 1;
+      - explainContains: "ISCAN(DMASK1 <,>)"
+      - result: [
+          {A: 2, D: 2},
+          {A: 4, D: 0},
+          {A: 6, D: 2},
+          {A: 8, D: 0},
+          {A: 1, D: 3},
+          {A: 3, D: 1},
+          {A: 5, D: 3},
+          {A: 7, D: 1},
+          {A: 9, D: 3},
+        ]
+    -
+      # `d & 3` matches neither index, and there's no other way to produce this order.
+      - query: select a, d from t order by d & 3;
+      - error: UNSUPPORTED_QUERY
 ...

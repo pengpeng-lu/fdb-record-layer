@@ -211,13 +211,6 @@ public class Ordering {
     @Nonnull
     private final QueryPlanConstraint constraint;
 
-    /**
-     * Primary constructor. Protected from the outside world.
-     * @param bindingMap a multimap of bindings
-     * @param orderingSet a {@link PartiallyOrderedSet} of {@link Value}s
-     * @param isDistinct an indicator if this ordering is strict
-     * @param sanityCheckConsumer a consumer that is executed in an insane environment
-     */
     protected Ordering(@Nonnull final SetMultimap<Value, Binding> bindingMap,
                        @Nonnull final PartiallyOrderedSet<Value> orderingSet,
                        final boolean isDistinct,
